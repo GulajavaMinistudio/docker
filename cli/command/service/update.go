@@ -524,20 +524,21 @@ func updateLabels(flags *pflag.FlagSet, field *map[string]string) {
 }
 
 func updateEnvironment(flags *pflag.FlagSet, field *[]string) {
-	envSet := map[string]string{}
-	for _, v := range *field {
-		envSet[envKey(v)] = v
-	}
 	if flags.Changed(flagEnvAdd) {
+		envSet := map[string]string{}
+		for _, v := range *field {
+			envSet[envKey(v)] = v
+		}
+
 		value := flags.Lookup(flagEnvAdd).Value.(*opts.ListOpts)
 		for _, v := range value.GetAll() {
 			envSet[envKey(v)] = v
 		}
-	}
 
-	*field = []string{}
-	for _, v := range envSet {
-		*field = append(*field, v)
+		*field = []string{}
+		for _, v := range envSet {
+			*field = append(*field, v)
+		}
 	}
 
 	toRemove := buildToRemoveSet(flags, flagEnvRemove)
@@ -897,7 +898,7 @@ func updateLogDriver(flags *pflag.FlagSet, taskTemplate *swarm.TaskSpec) error {
 }
 
 func updateHealthcheck(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec) error {
-	if !anyChanged(flags, flagNoHealthcheck, flagHealthCmd, flagHealthInterval, flagHealthRetries, flagHealthTimeout) {
+	if !anyChanged(flags, flagNoHealthcheck, flagHealthCmd, flagHealthInterval, flagHealthRetries, flagHealthTimeout, flagHealthStartPeriod) {
 		return nil
 	}
 	if containerSpec.Healthcheck == nil {
@@ -908,7 +909,7 @@ func updateHealthcheck(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec)
 		return err
 	}
 	if noHealthcheck {
-		if !anyChanged(flags, flagHealthCmd, flagHealthInterval, flagHealthRetries, flagHealthTimeout) {
+		if !anyChanged(flags, flagHealthCmd, flagHealthInterval, flagHealthRetries, flagHealthTimeout, flagHealthStartPeriod) {
 			containerSpec.Healthcheck = &container.HealthConfig{
 				Test: []string{"NONE"},
 			}
@@ -926,6 +927,10 @@ func updateHealthcheck(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec)
 	if flags.Changed(flagHealthTimeout) {
 		val := *flags.Lookup(flagHealthTimeout).Value.(*PositiveDurationOpt).Value()
 		containerSpec.Healthcheck.Timeout = val
+	}
+	if flags.Changed(flagHealthStartPeriod) {
+		val := *flags.Lookup(flagHealthStartPeriod).Value.(*PositiveDurationOpt).Value()
+		containerSpec.Healthcheck.StartPeriod = val
 	}
 	if flags.Changed(flagHealthRetries) {
 		containerSpec.Healthcheck.Retries, _ = flags.GetInt(flagHealthRetries)
