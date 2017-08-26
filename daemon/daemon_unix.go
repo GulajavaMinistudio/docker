@@ -64,22 +64,23 @@ const (
 	cgroupSystemdDriver = "systemd"
 )
 
+type containerGetter interface {
+	GetContainer(string) (*container.Container, error)
+}
+
 func getMemoryResources(config containertypes.Resources) *specs.LinuxMemory {
 	memory := specs.LinuxMemory{}
 
 	if config.Memory > 0 {
-		limit := uint64(config.Memory)
-		memory.Limit = &limit
+		memory.Limit = &config.Memory
 	}
 
 	if config.MemoryReservation > 0 {
-		reservation := uint64(config.MemoryReservation)
-		memory.Reservation = &reservation
+		memory.Reservation = &config.MemoryReservation
 	}
 
 	if config.MemorySwap > 0 {
-		swap := uint64(config.MemorySwap)
-		memory.Swap = &swap
+		memory.Swap = &config.MemorySwap
 	}
 
 	if config.MemorySwappiness != nil {
@@ -88,8 +89,7 @@ func getMemoryResources(config containertypes.Resources) *specs.LinuxMemory {
 	}
 
 	if config.KernelMemory != 0 {
-		kernelMemory := uint64(config.KernelMemory)
-		memory.Kernel = &kernelMemory
+		memory.Kernel = &config.KernelMemory
 	}
 
 	return &memory
@@ -285,6 +285,8 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
 		hostConfig.IpcMode = containertypes.IpcMode(m)
 	}
 
+	adaptSharedNamespaceContainer(daemon, hostConfig)
+
 	var err error
 	opts, err := daemon.generateSecurityOpt(hostConfig)
 	if err != nil {
@@ -297,6 +299,36 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
 	}
 
 	return nil
+}
+
+// adaptSharedNamespaceContainer replaces container name with its ID in hostConfig.
+// To be more precisely, it modifies `container:name` to `container:ID` of PidMode, IpcMode
+// and NetworkMode.
+//
+// When a container shares its namespace with another container, use ID can keep the namespace
+// sharing connection between the two containers even the another container is renamed.
+func adaptSharedNamespaceContainer(daemon containerGetter, hostConfig *containertypes.HostConfig) {
+	containerPrefix := "container:"
+	if hostConfig.PidMode.IsContainer() {
+		pidContainer := hostConfig.PidMode.Container()
+		// if there is any error returned here, we just ignore it and leave it to be
+		// handled in the following logic
+		if c, err := daemon.GetContainer(pidContainer); err == nil {
+			hostConfig.PidMode = containertypes.PidMode(containerPrefix + c.ID)
+		}
+	}
+	if hostConfig.IpcMode.IsContainer() {
+		ipcContainer := hostConfig.IpcMode.Container()
+		if c, err := daemon.GetContainer(ipcContainer); err == nil {
+			hostConfig.IpcMode = containertypes.IpcMode(containerPrefix + c.ID)
+		}
+	}
+	if hostConfig.NetworkMode.IsContainer() {
+		netContainer := hostConfig.NetworkMode.ConnectedContainer()
+		if c, err := daemon.GetContainer(netContainer); err == nil {
+			hostConfig.NetworkMode = containertypes.NetworkMode(containerPrefix + c.ID)
+		}
+	}
 }
 
 func verifyContainerResources(resources *containertypes.Resources, sysInfo *sysinfo.SysInfo, update bool) ([]string, error) {
