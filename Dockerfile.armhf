@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y \
 	libtool \
 	libudev-dev \
 	mercurial \
+	pigz \
 	pkg-config \
 	python-backports.ssl-match-hostname \
 	python-dev \
@@ -147,7 +148,7 @@ ENV PATH=/usr/local/cli:$PATH
 ENTRYPOINT ["hack/dind"]
 
 # Options for hack/validate/gometalinter
-ENV GOMETALINTER_OPTS="--deadline 10m -j2"
+ENV GOMETALINTER_OPTS="--deadline=10m -j2"
 
 # Upload docker source
 COPY . /go/src/github.com/docker/docker

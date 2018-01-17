@@ -62,6 +62,7 @@ RUN apt-get update && apt-get install -y \
 	libudev-dev \
 	mercurial \
 	net-tools \
+	pigz \
 	pkg-config \
 	protobuf-compiler \
 	protobuf-c-compiler \
@@ -190,7 +191,7 @@ RUN ln -s /usr/local/completion/bash/docker /etc/bash_completion.d/docker
 ENTRYPOINT ["hack/dind"]
 
 # Options for hack/validate/gometalinter
-ENV GOMETALINTER_OPTS="--deadline 2m"
+ENV GOMETALINTER_OPTS="--deadline=2m"
 
 # Upload docker source
 COPY . /go/src/github.com/docker/docker
