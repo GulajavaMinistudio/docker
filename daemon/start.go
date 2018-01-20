@@ -9,6 +9,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/mount"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -222,13 +223,17 @@ func (daemon *Daemon) Cleanup(container *container.Container) {
 	if err := daemon.conditionalUnmountOnCleanup(container); err != nil {
 		// FIXME: remove once reference counting for graphdrivers has been refactored
 		// Ensure that all the mounts are gone
-		if mountid, err := daemon.stores[container.OS].layerStore.GetMountID(container.ID); err == nil {
+		if mountid, err := daemon.layerStores[container.OS].GetMountID(container.ID); err == nil {
 			daemon.cleanupMountsByID(mountid)
 		}
 	}
 
 	if err := container.UnmountSecrets(); err != nil {
 		logrus.Warnf("%s cleanup: failed to unmount secrets: %s", container.ID, err)
+	}
+
+	if err := mount.RecursiveUnmount(container.Root); err != nil {
+		logrus.WithError(err).WithField("container", container.ID).Warn("Error while cleaning up container resource mounts.")
 	}
 
 	for _, eConfig := range container.ExecCommands.Commands() {
