@@ -31,6 +31,7 @@ import (
 	moby_daemon "github.com/docker/docker/daemon"
 	"github.com/docker/docker/integration-cli/checker"
 	"github.com/docker/docker/integration-cli/cli"
+	"github.com/docker/docker/integration-cli/cli/build"
 	"github.com/docker/docker/integration-cli/daemon"
 	testdaemon "github.com/docker/docker/internal/test/daemon"
 	"github.com/docker/docker/opts"
@@ -1155,14 +1156,16 @@ func (s *DockerDaemonSuite) TestDaemonLoggingDriverNoneLogsError(c *check.C) {
 func (s *DockerDaemonSuite) TestDaemonLoggingDriverShouldBeIgnoredForBuild(c *check.C) {
 	s.d.StartWithBusybox(c, "--log-driver=splunk")
 
-	out, err := s.d.Cmd("build")
-	out, code, err := s.d.BuildImageWithOut("busyboxs", `
+	result := cli.BuildCmd(c, "busyboxs", cli.Daemon(s.d),
+		build.WithDockerfile(`
         FROM busybox
-        RUN echo foo`, false)
-	comment := check.Commentf("Failed to build image. output %s, exitCode %d, err %v", out, code, err)
-	c.Assert(err, check.IsNil, comment)
-	c.Assert(code, check.Equals, 0, comment)
-	c.Assert(out, checker.Contains, "foo", comment)
+        RUN echo foo`),
+		build.WithoutCache,
+	)
+	comment := check.Commentf("Failed to build image. output %s, exitCode %d, err %v", result.Combined(), result.ExitCode, result.Error)
+	c.Assert(result.Error, check.IsNil, comment)
+	c.Assert(result.ExitCode, check.Equals, 0, comment)
+	c.Assert(result.Combined(), checker.Contains, "foo", comment)
 }
 
 func (s *DockerDaemonSuite) TestDaemonUnixSockCleanedUp(c *check.C) {
@@ -1804,23 +1807,18 @@ func (s *DockerDaemonSuite) TestDaemonNoSpaceLeftOnDeviceError(c *check.C) {
 	c.Assert(mount.MakeRShared(testDir), checker.IsNil)
 	defer mount.Unmount(testDir)
 
-	// create a 2MiB image and mount it as graph root
+	// create a 3MiB image (with a 2MiB ext4 fs) and mount it as graph root
 	// Why in a container? Because `mount` sometimes behaves weirdly and often fails outright on this test in debian:jessie (which is what the test suite runs under if run from the Makefile)
 	dockerCmd(c, "run", "--rm", "-v", testDir+":/test", "busybox", "sh", "-c", "dd of=/test/testfs.img bs=1M seek=3 count=0")
 	icmd.RunCommand("mkfs.ext4", "-F", filepath.Join(testDir, "testfs.img")).Assert(c, icmd.Success)
 
-	result := icmd.RunCommand("losetup", "-f", "--show", filepath.Join(testDir, "testfs.img"))
-	result.Assert(c, icmd.Success)
-	loopname := strings.TrimSpace(string(result.Combined()))
-	defer exec.Command("losetup", "-d", loopname).Run()
-
-	dockerCmd(c, "run", "--privileged", "--rm", "-v", testDir+":/test:shared", "busybox", "sh", "-c", fmt.Sprintf("mkdir -p /test/test-mount && mount -t ext4 -no loop,rw %v /test/test-mount", loopname))
+	dockerCmd(c, "run", "--privileged", "--rm", "-v", testDir+":/test:shared", "busybox", "sh", "-c", "mkdir -p /test/test-mount && mount -n /test/testfs.img /test/test-mount")
 	defer mount.Unmount(filepath.Join(testDir, "test-mount"))
 
 	s.d.Start(c, "--data-root", filepath.Join(testDir, "test-mount"))
 	defer s.d.Stop(c)
 
-	// pull a repository large enough to fill the mount point
+	// pull a repository large enough to overfill the mounted filesystem
 	pullOut, err := s.d.Cmd("pull", "debian:stretch")
 	c.Assert(err, checker.NotNil, check.Commentf(pullOut))
 	c.Assert(pullOut, checker.Contains, "no space left on device")
@@ -2403,12 +2401,16 @@ func (s *DockerDaemonSuite) TestDaemonMaxConcurrencyWithConfigFileReload(c *chec
 
 func (s *DockerDaemonSuite) TestBuildOnDisabledBridgeNetworkDaemon(c *check.C) {
 	s.d.StartWithBusybox(c, "-b=none", "--iptables=false")
-	out, code, err := s.d.BuildImageWithOut("busyboxs",
-		`FROM busybox
-                RUN cat /etc/hosts`, false)
-	comment := check.Commentf("Failed to build image. output %s, exitCode %d, err %v", out, code, err)
-	c.Assert(err, check.IsNil, comment)
-	c.Assert(code, check.Equals, 0, comment)
+
+	result := cli.BuildCmd(c, "busyboxs", cli.Daemon(s.d),
+		build.WithDockerfile(`
+        FROM busybox
+        RUN cat /etc/hosts`),
+		build.WithoutCache,
+	)
+	comment := check.Commentf("Failed to build image. output %s, exitCode %d, err %v", result.Combined(), result.ExitCode, result.Error)
+	c.Assert(result.Error, check.IsNil, comment)
+	c.Assert(result.ExitCode, check.Equals, 0, comment)
 }
 
 // Test case for #21976
