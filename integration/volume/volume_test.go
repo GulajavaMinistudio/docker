@@ -26,7 +26,7 @@ func TestVolumesCreateAndList(t *testing.T) {
 	ctx := context.Background()
 
 	name := t.Name()
-	vol, err := client.VolumeCreate(ctx, volumetypes.VolumesCreateBody{
+	vol, err := client.VolumeCreate(ctx, volumetypes.VolumeCreateBody{
 		Name: name,
 	})
 	assert.NilError(t, err)
@@ -54,9 +54,9 @@ func TestVolumesRemove(t *testing.T) {
 	client := request.NewAPIClient(t)
 	ctx := context.Background()
 
-	prefix, _ := getPrefixAndSlashFromDaemonPlatform()
+	prefix, slash := getPrefixAndSlashFromDaemonPlatform()
 
-	id := container.Create(t, ctx, client, container.WithVolume(prefix+"foo"))
+	id := container.Create(t, ctx, client, container.WithVolume(prefix+slash+"foo"))
 
 	c, err := client.ContainerInspect(ctx, id)
 	assert.NilError(t, err)
@@ -75,6 +75,7 @@ func TestVolumesRemove(t *testing.T) {
 }
 
 func TestVolumesInspect(t *testing.T) {
+	skip.If(t, testEnv.IsRemoteDaemon, "cannot run daemon when remote daemon")
 	defer setupTest(t)()
 	client := request.NewAPIClient(t)
 	ctx := context.Background()
@@ -83,7 +84,7 @@ func TestVolumesInspect(t *testing.T) {
 	now := time.Now().Truncate(time.Minute)
 
 	name := t.Name()
-	_, err := client.VolumeCreate(ctx, volumetypes.VolumesCreateBody{
+	_, err := client.VolumeCreate(ctx, volumetypes.VolumeCreateBody{
 		Name: name,
 	})
 	assert.NilError(t, err)
