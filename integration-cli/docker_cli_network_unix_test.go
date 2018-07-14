@@ -348,7 +348,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkLsFilter(c *check.C) {
 	out, _ = dockerCmd(c, "network", "ls", "-f", "type=custom", "-f", "type=builtin")
 	assertNwList(c, out, []string{"bridge", "dev", "host", "none"})
 
-	out, _ = dockerCmd(c, "network", "create", "--label", testLabel+"="+testValue, testNet)
+	dockerCmd(c, "network", "create", "--label", testLabel+"="+testValue, testNet)
 	assertNwIsAvailable(c, testNet)
 
 	out, _ = dockerCmd(c, "network", "ls", "-f", "label="+testLabel)
@@ -880,8 +880,6 @@ func (s *DockerNetworkSuite) TestDockerNetworkAnonymousEndpoint(c *check.C) {
 	out, _ = dockerCmd(c, "run", "-d", "--net", cstmBridgeNw, "busybox", "top")
 	cid2 := strings.TrimSpace(out)
 
-	hosts2 := readContainerFileWithExec(c, cid2, hostsFile)
-
 	// verify first container etc/hosts file has not changed
 	hosts1post := readContainerFileWithExec(c, cid1, hostsFile)
 	c.Assert(string(hosts1), checker.Equals, string(hosts1post),
@@ -894,7 +892,7 @@ func (s *DockerNetworkSuite) TestDockerNetworkAnonymousEndpoint(c *check.C) {
 
 	dockerCmd(c, "network", "connect", cstmBridgeNw1, cid2)
 
-	hosts2 = readContainerFileWithExec(c, cid2, hostsFile)
+	hosts2 := readContainerFileWithExec(c, cid2, hostsFile)
 	hosts1post = readContainerFileWithExec(c, cid1, hostsFile)
 	c.Assert(string(hosts1), checker.Equals, string(hosts1post),
 		check.Commentf("Unexpected %s change on container connect", hostsFile))
@@ -1646,9 +1644,9 @@ func (s *DockerSuite) TestDockerNetworkInternalMode(c *check.C) {
 	c.Assert(waitRun("first"), check.IsNil)
 	dockerCmd(c, "run", "-d", "--net=internal", "--name=second", "busybox:glibc", "top")
 	c.Assert(waitRun("second"), check.IsNil)
-	out, _, err := dockerCmdWithError("exec", "first", "ping", "-W", "4", "-c", "1", "www.google.com")
+	out, _, err := dockerCmdWithError("exec", "first", "ping", "-W", "4", "-c", "1", "8.8.8.8")
 	c.Assert(err, check.NotNil)
-	c.Assert(out, checker.Contains, "ping: bad address")
+	c.Assert(out, checker.Contains, "100% packet loss")
 	_, _, err = dockerCmdWithError("exec", "second", "ping", "-c", "1", "first")
 	c.Assert(err, check.IsNil)
 }
