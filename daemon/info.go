@@ -73,6 +73,7 @@ func (daemon *Daemon) SystemInfo() (*types.Info, error) {
 	daemon.fillDriverInfo(v)
 	daemon.fillPluginsInfo(v)
 	daemon.fillSecurityOptions(v, sysInfo)
+	daemon.fillLicense(v)
 
 	return v, nil
 }
@@ -162,7 +163,7 @@ func (daemon *Daemon) fillSecurityOptions(v *types.Info, sysInfo *sysinfo.SysInf
 	if selinuxEnabled() {
 		securityOptions = append(securityOptions, "name=selinux")
 	}
-	if rootIDs := daemon.idMappings.RootPair(); rootIDs.UID != 0 || rootIDs.GID != 0 {
+	if rootIDs := daemon.idMapping.RootPair(); rootIDs.UID != 0 || rootIDs.GID != 0 {
 		securityOptions = append(securityOptions, "name=userns")
 	}
 	v.SecurityOptions = securityOptions
