@@ -28,6 +28,7 @@ import (
 	"github.com/docker/swarmkit/ioutils"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager"
+	"github.com/docker/swarmkit/manager/allocator/cnmallocator"
 	"github.com/docker/swarmkit/manager/encryption"
 	"github.com/docker/swarmkit/remotes"
 	"github.com/docker/swarmkit/xnet"
@@ -104,6 +105,9 @@ type Config struct {
 	// AdvertiseRemoteAPI specifies the address that should be advertised
 	// for connections to the remote API (including the raft service).
 	AdvertiseRemoteAPI string
+
+	// NetworkConfig stores network related config for the cluster
+	NetworkConfig *cnmallocator.NetworkConfig
 
 	// Executor specifies the executor to use for the agent.
 	Executor exec.Executor
@@ -995,6 +999,7 @@ func (n *Node) runManager(ctx context.Context, securityConfig *ca.SecurityConfig
 		PluginGetter:     n.config.PluginGetter,
 		RootCAPaths:      rootPaths,
 		FIPS:             n.config.FIPS,
+		NetworkConfig:    n.config.NetworkConfig,
 	})
 	if err != nil {
 		return false, err

@@ -2,12 +2,15 @@ package control
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/docker/distribution/reference"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	apitypes "github.com/moby/buildkit/api/types"
 	"github.com/moby/buildkit/cache/remotecache"
 	"github.com/moby/buildkit/client"
+	controlgateway "github.com/moby/buildkit/control/gateway"
 	"github.com/moby/buildkit/exporter"
 	"github.com/moby/buildkit/frontend"
 	"github.com/moby/buildkit/session"
@@ -15,6 +18,7 @@ import (
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/llbsolver"
 	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/buildkit/util/throttle"
 	"github.com/moby/buildkit/worker"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -34,29 +38,42 @@ type Opt struct {
 }
 
 type Controller struct { // TODO: ControlService
-	opt    Opt
-	solver *llbsolver.Solver
-	cache  solver.CacheManager
+	opt              Opt
+	solver           *llbsolver.Solver
+	cache            solver.CacheManager
+	gatewayForwarder *controlgateway.GatewayForwarder
+	throttledGC      func()
+	gcmu             sync.Mutex
 }
 
 func NewController(opt Opt) (*Controller, error) {
 	cache := solver.NewCacheManager("local", opt.CacheKeyStorage, worker.NewCacheResultStorage(opt.WorkerController))
 
-	solver, err := llbsolver.New(opt.WorkerController, opt.Frontends, cache, opt.ResolveCacheImporterFunc)
+	gatewayForwarder := controlgateway.NewGatewayForwarder()
+
+	solver, err := llbsolver.New(opt.WorkerController, opt.Frontends, cache, opt.ResolveCacheImporterFunc, gatewayForwarder)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create solver")
 	}
 
 	c := &Controller{
-		opt:    opt,
-		solver: solver,
-		cache:  cache,
+		opt:              opt,
+		solver:           solver,
+		cache:            cache,
+		gatewayForwarder: gatewayForwarder,
 	}
+	c.throttledGC = throttle.ThrottleAfter(time.Minute, c.gc)
+
+	defer func() {
+		time.AfterFunc(time.Second, c.throttledGC)
+	}()
+
 	return c, nil
 }
 
 func (c *Controller) Register(server *grpc.Server) error {
 	controlapi.RegisterControlServer(server, c)
+	c.gatewayForwarder.Register(server)
 	return nil
 }
 
@@ -120,8 +137,10 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 		func(w worker.Worker) {
 			eg.Go(func() error {
 				return w.Prune(ctx, ch, client.PruneInfo{
-					Filter: req.Filter,
-					All:    req.All,
+					Filter:       req.Filter,
+					All:          req.All,
+					KeepDuration: time.Duration(req.KeepDuration),
+					KeepBytes:    req.KeepBytes,
 				})
 			})
 		}(w)
@@ -162,6 +181,10 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 
 func (c *Controller) Solve(ctx context.Context, req *controlapi.SolveRequest) (*controlapi.SolveResponse, error) {
 	ctx = session.NewContext(ctx, req.Session)
+
+	defer func() {
+		time.AfterFunc(time.Second, c.throttledGC)
+	}()
 
 	var expi exporter.ExporterInstance
 	// TODO: multiworker
@@ -213,7 +236,7 @@ func (c *Controller) Solve(ctx context.Context, req *controlapi.SolveRequest) (*
 		Exporter:        expi,
 		CacheExporter:   cacheExporter,
 		CacheExportMode: parseCacheExporterOpt(req.Cache.ExportAttrs),
-	})
+	}, req.Entitlements)
 	if err != nil {
 		return nil, err
 	}
@@ -304,9 +327,53 @@ func (c *Controller) ListWorkers(ctx context.Context, r *controlapi.ListWorkersR
 			ID:        w.ID(),
 			Labels:    w.Labels(),
 			Platforms: pb.PlatformsFromSpec(w.Platforms()),
+			GCPolicy:  toPBGCPolicy(w.GCPolicy()),
 		})
 	}
 	return resp, nil
+}
+
+func (c *Controller) gc() {
+	c.gcmu.Lock()
+	defer c.gcmu.Unlock()
+
+	workers, err := c.opt.WorkerController.List()
+	if err != nil {
+		return
+	}
+
+	eg, ctx := errgroup.WithContext(context.TODO())
+
+	var size int64
+	ch := make(chan client.UsageInfo)
+	done := make(chan struct{})
+	go func() {
+		for ui := range ch {
+			size += ui.Size
+		}
+		close(done)
+	}()
+
+	for _, w := range workers {
+		func(w worker.Worker) {
+			eg.Go(func() error {
+				if policy := w.GCPolicy(); len(policy) > 0 {
+					return w.Prune(ctx, ch, policy...)
+				}
+				return nil
+			})
+		}(w)
+	}
+
+	err = eg.Wait()
+	close(ch)
+	if err != nil {
+		logrus.Errorf("gc error: %+v", err)
+	}
+	<-done
+	if size > 0 {
+		logrus.Debugf("gc cleaned up %d bytes", size)
+	}
 }
 
 func parseCacheExporterOpt(opt map[string]string) solver.CacheExportMode {
@@ -326,4 +393,17 @@ func parseCacheExporterOpt(opt map[string]string) solver.CacheExportMode {
 		}
 	}
 	return solver.CacheExportModeMin
+}
+
+func toPBGCPolicy(in []client.PruneInfo) []*apitypes.GCPolicy {
+	policy := make([]*apitypes.GCPolicy, 0, len(in))
+	for _, p := range in {
+		policy = append(policy, &apitypes.GCPolicy{
+			All:          p.All,
+			KeepBytes:    p.KeepBytes,
+			KeepDuration: int64(p.KeepDuration),
+			Filters:      p.Filter,
+		})
+	}
+	return policy
 }

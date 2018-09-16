@@ -102,7 +102,7 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 	system.InitLCOW(cli.Config.Experimental)
 
 	if err := setDefaultUmask(); err != nil {
-		return fmt.Errorf("Failed to set umask: %v", err)
+		return err
 	}
 
 	// Create the daemon root before we create ANY other files (PID, or migrate keys)
@@ -118,7 +118,7 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 	if cli.Pidfile != "" {
 		pf, err := pidfile.New(cli.Pidfile)
 		if err != nil {
-			return fmt.Errorf("Error starting daemon: %v", err)
+			return errors.Wrap(err, "failed to start daemon")
 		}
 		defer func() {
 			if err := pf.Remove(); err != nil {
@@ -129,13 +129,13 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 
 	serverConfig, err := newAPIServerConfig(cli)
 	if err != nil {
-		return fmt.Errorf("Failed to create API server: %v", err)
+		return errors.Wrap(err, "failed to create API server")
 	}
 	cli.api = apiserver.New(serverConfig)
 
 	hosts, err := loadListeners(cli, serverConfig)
 	if err != nil {
-		return fmt.Errorf("Failed to load listeners: %v", err)
+		return errors.Wrap(err, "failed to load listeners")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -143,13 +143,13 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 		opts, err := cli.getContainerdDaemonOpts()
 		if err != nil {
 			cancel()
-			return fmt.Errorf("Failed to generate containerd options: %v", err)
+			return errors.Wrap(err, "failed to generate containerd options")
 		}
 
 		r, err := supervisor.Start(ctx, filepath.Join(cli.Config.Root, "containerd"), filepath.Join(cli.Config.ExecRoot, "containerd"), opts...)
 		if err != nil {
 			cancel()
-			return fmt.Errorf("Failed to start containerd: %v", err)
+			return errors.Wrap(err, "failed to start containerd")
 		}
 
 		cli.Config.ContainerdAddr = r.Address()
@@ -175,20 +175,20 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 
 	d, err := daemon.NewDaemon(ctx, cli.Config, pluginStore)
 	if err != nil {
-		return fmt.Errorf("Error starting daemon: %v", err)
+		return errors.Wrap(err, "failed to start daemon")
 	}
 
 	d.StoreHosts(hosts)
 
-	// validate after NewDaemon has restored enabled plugins. Dont change order.
+	// validate after NewDaemon has restored enabled plugins. Don't change order.
 	if err := validateAuthzPlugins(cli.Config.AuthorizationPlugins, pluginStore); err != nil {
-		return fmt.Errorf("Error validating authorization plugin: %v", err)
+		return errors.Wrap(err, "failed to validate authorization plugin")
 	}
 
 	// TODO: move into startMetricsServer()
 	if cli.Config.MetricsAddress != "" {
 		if !d.HasExperimental() {
-			return fmt.Errorf("metrics-addr is only supported when experimental is enabled")
+			return errors.Wrap(err, "metrics-addr is only supported when experimental is enabled")
 		}
 		if err := startMetricsServer(cli.Config.MetricsAddress); err != nil {
 			return err
@@ -242,7 +242,7 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 	cancel()
 
 	if errAPI != nil {
-		return fmt.Errorf("Shutting down due to ServeAPI error: %v", errAPI)
+		return errors.Wrap(errAPI, "shutting down due to ServeAPI error")
 	}
 
 	return nil
@@ -252,13 +252,14 @@ type routerOptions struct {
 	sessionManager *session.Manager
 	buildBackend   *buildbackend.Backend
 	buildCache     *fscache.FSCache // legacy
+	features       *map[string]bool
 	buildkit       *buildkit.Builder
 	daemon         *daemon.Daemon
 	api            *apiserver.Server
 	cluster        *cluster.Cluster
 }
 
-func newRouterOptions(config *config.Config, daemon *daemon.Daemon) (routerOptions, error) {
+func newRouterOptions(config *config.Config, d *daemon.Daemon) (routerOptions, error) {
 	opts := routerOptions{}
 	sm, err := session.NewManager()
 	if err != nil {
@@ -279,31 +280,33 @@ func newRouterOptions(config *config.Config, daemon *daemon.Daemon) (routerOptio
 		return opts, errors.Wrap(err, "failed to create fscache")
 	}
 
-	manager, err := dockerfile.NewBuildManager(daemon.BuilderBackend(), sm, buildCache, daemon.IdentityMapping())
+	manager, err := dockerfile.NewBuildManager(d.BuilderBackend(), sm, buildCache, d.IdentityMapping())
 	if err != nil {
 		return opts, err
 	}
-
-	buildkit, err := buildkit.New(buildkit.Opt{
-		SessionManager: sm,
-		Root:           filepath.Join(config.Root, "buildkit"),
-		Dist:           daemon.DistributionServices(),
+	cgroupParent := newCgroupParent(config)
+	bk, err := buildkit.New(buildkit.Opt{
+		SessionManager:      sm,
+		Root:                filepath.Join(config.Root, "buildkit"),
+		Dist:                d.DistributionServices(),
+		NetworkController:   d.NetworkController(),
+		DefaultCgroupParent: cgroupParent,
 	})
 	if err != nil {
 		return opts, err
 	}
 
-	bb, err := buildbackend.NewBackend(daemon.ImageService(), manager, buildCache, buildkit)
+	bb, err := buildbackend.NewBackend(d.ImageService(), manager, buildCache, bk)
 	if err != nil {
 		return opts, errors.Wrap(err, "failed to create buildmanager")
 	}
-
 	return routerOptions{
 		sessionManager: sm,
 		buildBackend:   bb,
 		buildCache:     buildCache,
-		buildkit:       buildkit,
-		daemon:         daemon,
+		buildkit:       bk,
+		features:       d.Features(),
+		daemon:         d,
 	}, nil
 }
 
@@ -401,14 +404,14 @@ func loadDaemonCliConfig(opts *daemonOptions) (*config.Config, error) {
 	}
 
 	if flags.Changed("graph") && flags.Changed("data-root") {
-		return nil, fmt.Errorf(`cannot specify both "--graph" and "--data-root" option`)
+		return nil, errors.New(`cannot specify both "--graph" and "--data-root" option`)
 	}
 
 	if opts.configFile != "" {
 		c, err := config.MergeDaemonConfigurations(conf, flags, opts.configFile)
 		if err != nil {
 			if flags.Changed("config-file") || !os.IsNotExist(err) {
-				return nil, fmt.Errorf("unable to configure the Docker daemon with file %s: %v", opts.configFile, err)
+				return nil, errors.Wrapf(err, "unable to configure the Docker daemon with file %s", opts.configFile)
 			}
 		}
 		// the merged configuration can be nil if the config file didn't exist.
@@ -476,9 +479,9 @@ func initRouter(opts routerOptions) {
 		checkpointrouter.NewRouter(opts.daemon, decoder),
 		container.NewRouter(opts.daemon, decoder),
 		image.NewRouter(opts.daemon.ImageService()),
-		systemrouter.NewRouter(opts.daemon, opts.cluster, opts.buildCache, opts.buildkit),
+		systemrouter.NewRouter(opts.daemon, opts.cluster, opts.buildCache, opts.buildkit, opts.features),
 		volume.NewRouter(opts.daemon.VolumesService()),
-		build.NewRouter(opts.buildBackend, opts.daemon),
+		build.NewRouter(opts.buildBackend, opts.daemon, opts.features),
 		sessionrouter.NewRouter(opts.sessionManager),
 		swarmrouter.NewRouter(opts.cluster),
 		pluginrouter.NewRouter(opts.daemon.PluginManager()),
@@ -581,7 +584,7 @@ func loadListeners(cli *DaemonCli, serverConfig *apiserver.Config) ([]string, er
 	for i := 0; i < len(cli.Config.Hosts); i++ {
 		var err error
 		if cli.Config.Hosts[i], err = dopts.ParseHost(cli.Config.TLS, cli.Config.Hosts[i]); err != nil {
-			return nil, fmt.Errorf("error parsing -H %s : %v", cli.Config.Hosts[i], err)
+			return nil, errors.Wrapf(err, "error parsing -H %s", cli.Config.Hosts[i])
 		}
 
 		protoAddr := cli.Config.Hosts[i]

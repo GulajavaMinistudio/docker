@@ -43,7 +43,7 @@ type remote struct {
 	logger    *logrus.Entry
 
 	daemonWaitCh  chan struct{}
-	daemonStartCh chan struct{}
+	daemonStartCh chan error
 	daemonStopCh  chan struct{}
 
 	rootDir     string
@@ -72,7 +72,7 @@ func Start(ctx context.Context, rootDir, stateDir string, opts ...DaemonOpt) (Da
 		pluginConfs:   pluginConfigs{make(map[string]interface{})},
 		daemonPid:     -1,
 		logger:        logrus.WithField("module", "libcontainerd"),
-		daemonStartCh: make(chan struct{}),
+		daemonStartCh: make(chan error, 1),
 		daemonStopCh:  make(chan struct{}),
 	}
 
@@ -92,7 +92,10 @@ func Start(ctx context.Context, rootDir, stateDir string, opts ...DaemonOpt) (Da
 	select {
 	case <-time.After(startupTimeout):
 		return nil, errors.New("timeout waiting for containerd to start")
-	case <-r.daemonStartCh:
+	case err := <-r.daemonStartCh:
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return r, nil
@@ -245,30 +248,40 @@ func (r *remote) monitorDaemon(ctx context.Context) {
 	}()
 
 	for {
-		select {
-		case <-ctx.Done():
-			r.logger.Info("stopping healthcheck following graceful shutdown")
-			if client != nil {
-				client.Close()
+		if delay != nil {
+			select {
+			case <-ctx.Done():
+				r.logger.Info("stopping healthcheck following graceful shutdown")
+				if client != nil {
+					client.Close()
+				}
+				return
+			case <-delay:
 			}
-			return
-		case <-delay:
-		default:
 		}
 
 		if r.daemonPid == -1 {
 			if r.daemonWaitCh != nil {
-				<-r.daemonWaitCh
+				select {
+				case <-ctx.Done():
+					r.logger.Info("stopping containerd startup following graceful shutdown")
+					return
+				case <-r.daemonWaitCh:
+				}
 			}
 
 			os.RemoveAll(r.GRPC.Address)
 			if err := r.startContainerd(); err != nil {
-				r.logger.WithError(err).Error("failed starting containerd")
+				if !started {
+					r.daemonStartCh <- err
+					return
+				}
+				r.logger.WithError(err).Error("failed restarting containerd")
 				delay = time.After(50 * time.Millisecond)
 				continue
 			}
 
-			client, err = containerd.New(r.GRPC.Address)
+			client, err = containerd.New(r.GRPC.Address, containerd.WithTimeout(60*time.Second))
 			if err != nil {
 				r.logger.WithError(err).Error("failed connecting to containerd")
 				delay = time.After(100 * time.Millisecond)
@@ -276,26 +289,28 @@ func (r *remote) monitorDaemon(ctx context.Context) {
 			}
 		}
 
-		tctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-		_, err := client.IsServing(tctx)
-		cancel()
-		if err == nil {
-			if !started {
-				close(r.daemonStartCh)
-				started = true
+		if client != nil {
+			tctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+			_, err := client.IsServing(tctx)
+			cancel()
+			if err == nil {
+				if !started {
+					close(r.daemonStartCh)
+					started = true
+				}
+
+				transientFailureCount = 0
+				delay = time.After(500 * time.Millisecond)
+				continue
 			}
 
-			transientFailureCount = 0
-			delay = time.After(500 * time.Millisecond)
-			continue
-		}
+			r.logger.WithError(err).WithField("binary", binaryName).Debug("daemon is not responding")
 
-		r.logger.WithError(err).WithField("binary", binaryName).Debug("daemon is not responding")
-
-		transientFailureCount++
-		if transientFailureCount < maxConnectionRetryCount || system.IsProcessAlive(r.daemonPid) {
-			delay = time.After(time.Duration(transientFailureCount) * 200 * time.Millisecond)
-			continue
+			transientFailureCount++
+			if transientFailureCount < maxConnectionRetryCount || system.IsProcessAlive(r.daemonPid) {
+				delay = time.After(time.Duration(transientFailureCount) * 200 * time.Millisecond)
+				continue
+			}
 		}
 
 		if system.IsProcessAlive(r.daemonPid) {
@@ -304,6 +319,7 @@ func (r *remote) monitorDaemon(ctx context.Context) {
 		}
 
 		client.Close()
+		client = nil
 		r.daemonPid = -1
 		delay = nil
 		transientFailureCount = 0

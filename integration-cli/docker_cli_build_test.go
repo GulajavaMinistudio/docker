@@ -24,6 +24,7 @@ import (
 	"github.com/docker/docker/internal/test/fakestorage"
 	"github.com/docker/docker/internal/testutil"
 	"github.com/docker/docker/pkg/archive"
+	"github.com/docker/docker/pkg/system"
 	"github.com/go-check/check"
 	"github.com/moby/buildkit/frontend/dockerfile/command"
 	"github.com/opencontainers/go-digest"
@@ -655,7 +656,7 @@ func (s *DockerSuite) TestBuildCopyWildcard(c *check.C) {
 			"file2.txt":                     "test2",
 			"dir/nested_file":               "nested file",
 			"dir/nested_dir/nest_nest_file": "2 times nested",
-			"dirt": "dirty",
+			"dirt":                          "dirty",
 		}))
 	defer ctx.Close()
 
@@ -3601,6 +3602,11 @@ func (s *DockerSuite) TestBuildSymlinkBreakout(c *check.C) {
 	name := "testbuildsymlinkbreakout"
 	tmpdir, err := ioutil.TempDir("", name)
 	c.Assert(err, check.IsNil)
+
+	// See https://github.com/moby/moby/pull/37770 for reason for next line.
+	tmpdir, err = system.GetLongPathName(tmpdir)
+	c.Assert(err, check.IsNil)
+
 	defer os.RemoveAll(tmpdir)
 	ctx := filepath.Join(tmpdir, "context")
 	if err := os.MkdirAll(ctx, 0755); err != nil {

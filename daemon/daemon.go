@@ -136,6 +136,11 @@ func (daemon *Daemon) HasExperimental() bool {
 	return daemon.configStore != nil && daemon.configStore.Experimental
 }
 
+// Features returns the features map from configStore
+func (daemon *Daemon) Features() *map[string]bool {
+	return &daemon.configStore.Features
+}
+
 func (daemon *Daemon) restore() error {
 	containers := make(map[string]*container.Container)
 
@@ -741,7 +746,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(defaults.DefaultMaxSendMsgSize)),
 	}
 	if config.ContainerdAddr != "" {
-		d.containerdCli, err = containerd.New(config.ContainerdAddr, containerd.WithDefaultNamespace(ContainersNamespace), containerd.WithDialOpts(gopts))
+		d.containerdCli, err = containerd.New(config.ContainerdAddr, containerd.WithDefaultNamespace(ContainersNamespace), containerd.WithDialOpts(gopts), containerd.WithTimeout(60*time.Second))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to dial %q", config.ContainerdAddr)
 		}
@@ -753,7 +758,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		// Windows is not currently using containerd, keep the
 		// client as nil
 		if config.ContainerdAddr != "" {
-			pluginCli, err = containerd.New(config.ContainerdAddr, containerd.WithDefaultNamespace(pluginexec.PluginNamespace), containerd.WithDialOpts(gopts))
+			pluginCli, err = containerd.New(config.ContainerdAddr, containerd.WithDefaultNamespace(pluginexec.PluginNamespace), containerd.WithDialOpts(gopts), containerd.WithTimeout(60*time.Second))
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to dial %q", config.ContainerdAddr)
 			}
@@ -783,7 +788,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 
 	for operatingSystem, gd := range d.graphDrivers {
 		layerStores[operatingSystem], err = layer.NewStoreFromOptions(layer.StoreOptions{
-			Root: config.Root,
+			Root:                      config.Root,
 			MetadataStorePathTemplate: filepath.Join(config.Root, "image", "%s", "layerdb"),
 			GraphDriver:               gd,
 			GraphDriverOptions:        config.GraphOptions,

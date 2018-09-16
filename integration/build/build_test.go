@@ -37,8 +37,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 0`,
 			numberOfIntermediateContainers: 2,
-			rm:      false,
-			forceRm: false,
+			rm:                             false,
+			forceRm:                        false,
 		},
 		{
 			name: "successful build with remove",
@@ -46,8 +46,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 0`,
 			numberOfIntermediateContainers: 0,
-			rm:      true,
-			forceRm: false,
+			rm:                             true,
+			forceRm:                        false,
 		},
 		{
 			name: "successful build with remove and force remove",
@@ -55,8 +55,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 0`,
 			numberOfIntermediateContainers: 0,
-			rm:      true,
-			forceRm: true,
+			rm:                             true,
+			forceRm:                        true,
 		},
 		{
 			name: "failed build with no removal",
@@ -64,8 +64,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 1`,
 			numberOfIntermediateContainers: 2,
-			rm:      false,
-			forceRm: false,
+			rm:                             false,
+			forceRm:                        false,
 		},
 		{
 			name: "failed build with remove",
@@ -73,8 +73,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 1`,
 			numberOfIntermediateContainers: 1,
-			rm:      true,
-			forceRm: false,
+			rm:                             true,
+			forceRm:                        false,
 		},
 		{
 			name: "failed build with remove and force remove",
@@ -82,8 +82,8 @@ func TestBuildWithRemoveAndForceRemove(t *testing.T) {
 			RUN exit 0
 			RUN exit 1`,
 			numberOfIntermediateContainers: 0,
-			rm:      true,
-			forceRm: true,
+			rm:                             true,
+			forceRm:                        true,
 		},
 	}
 
@@ -420,6 +420,38 @@ RUN [ ! -f foo ]
 	resp.Body.Close()
 	assert.NilError(t, err)
 
+	assert.Check(t, is.Contains(out.String(), "Successfully built"))
+}
+
+// #37581
+func TestBuildWithHugeFile(t *testing.T) {
+	ctx := context.TODO()
+	defer setupTest(t)()
+
+	dockerfile := `FROM busybox
+# create a sparse file with size over 8GB
+RUN for g in $(seq 0 8); do dd if=/dev/urandom of=rnd bs=1K count=1 seek=$((1024*1024*g)) status=none; done && \
+    ls -la rnd && du -sk rnd`
+
+	buf := bytes.NewBuffer(nil)
+	w := tar.NewWriter(buf)
+	writeTarRecord(t, w, "Dockerfile", dockerfile)
+	err := w.Close()
+	assert.NilError(t, err)
+
+	apiclient := testEnv.APIClient()
+	resp, err := apiclient.ImageBuild(ctx,
+		buf,
+		types.ImageBuildOptions{
+			Remove:      true,
+			ForceRemove: true,
+		})
+
+	out := bytes.NewBuffer(nil)
+	assert.NilError(t, err)
+	_, err = io.Copy(out, resp.Body)
+	resp.Body.Close()
+	assert.NilError(t, err)
 	assert.Check(t, is.Contains(out.String(), "Successfully built"))
 }
 

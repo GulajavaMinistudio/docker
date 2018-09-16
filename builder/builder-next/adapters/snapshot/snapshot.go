@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/boltdb/bolt"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/docker/docker/daemon/graphdriver"
@@ -16,6 +15,7 @@ import (
 	"github.com/moby/buildkit/snapshot"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
+	bolt "go.etcd.io/bbolt"
 )
 
 var keyParent = []byte("parent")
@@ -108,6 +108,10 @@ func (s *snapshotter) chainID(key string) (layer.ChainID, bool) {
 		return layer.ChainID(dgst), true
 	}
 	return "", false
+}
+
+func (s *snapshotter) GetLayer(key string) (layer.Layer, error) {
+	return s.getLayer(key, true)
 }
 
 func (s *snapshotter) getLayer(key string, withCommitted bool) (layer.Layer, error) {
