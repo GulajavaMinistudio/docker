@@ -40,6 +40,11 @@ const (
 	windowsMaxCPUPercent = 100
 )
 
+// Windows doesn't really have rlimits.
+func adjustParallelLimit(n int, limit int) int {
+	return limit
+}
+
 // Windows has no concept of an execution state directory. So use config.Root here.
 func getPluginExecRoot(root string) string {
 	return filepath.Join(root, "plugins")
@@ -75,8 +80,8 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *containertypes.HostConf
 	return nil
 }
 
-func verifyContainerResources(resources *containertypes.Resources, isHyperv bool) ([]string, error) {
-	warnings := []string{}
+// verifyPlatformContainerResources performs platform-specific validation of the container's resource-configuration
+func verifyPlatformContainerResources(resources *containertypes.Resources, isHyperv bool) (warnings []string, err error) {
 	fixMemorySwappiness(resources)
 	if !isHyperv {
 		// The processor resource controls are mutually exclusive on
@@ -85,18 +90,15 @@ func verifyContainerResources(resources *containertypes.Resources, isHyperv bool
 		if resources.CPUCount > 0 {
 			if resources.CPUShares > 0 {
 				warnings = append(warnings, "Conflicting options: CPU count takes priority over CPU shares on Windows Server Containers. CPU shares discarded")
-				logrus.Warn("Conflicting options: CPU count takes priority over CPU shares on Windows Server Containers. CPU shares discarded")
 				resources.CPUShares = 0
 			}
 			if resources.CPUPercent > 0 {
 				warnings = append(warnings, "Conflicting options: CPU count takes priority over CPU percent on Windows Server Containers. CPU percent discarded")
-				logrus.Warn("Conflicting options: CPU count takes priority over CPU percent on Windows Server Containers. CPU percent discarded")
 				resources.CPUPercent = 0
 			}
 		} else if resources.CPUShares > 0 {
 			if resources.CPUPercent > 0 {
 				warnings = append(warnings, "Conflicting options: CPU shares takes priority over CPU percent on Windows Server Containers. CPU percent discarded")
-				logrus.Warn("Conflicting options: CPU shares takes priority over CPU percent on Windows Server Containers. CPU percent discarded")
 				resources.CPUPercent = 0
 			}
 		}
@@ -131,7 +133,6 @@ func verifyContainerResources(resources *containertypes.Resources, isHyperv bool
 			resources.NanoCPUs = ((resources.NanoCPUs + 1e9/2) / 1e9) * 1e9
 			warningString := fmt.Sprintf("Your current OS version does not support Hyper-V containers with NanoCPUs greater than 1000000000 but not divisible by 1000000000. NanoCPUs rounded to %d", resources.NanoCPUs)
 			warnings = append(warnings, warningString)
-			logrus.Warn(warningString)
 		}
 	}
 
@@ -191,8 +192,10 @@ func verifyContainerResources(resources *containertypes.Resources, isHyperv bool
 
 // verifyPlatformContainerSettings performs platform-specific validation of the
 // hostconfig and config structures.
-func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.HostConfig, config *containertypes.Config, update bool) ([]string, error) {
-	warnings := []string{}
+func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.HostConfig, update bool) (warnings []string, err error) {
+	if hostConfig == nil {
+		return nil, nil
+	}
 	osv := system.GetOSVersion()
 	hyperv := daemon.runAsHyperVContainer(hostConfig)
 
@@ -204,7 +207,7 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.
 		return warnings, fmt.Errorf("Windows client operating systems earlier than version 1809 can only run Hyper-V containers")
 	}
 
-	w, err := verifyContainerResources(&hostConfig.Resources, hyperv)
+	w, err := verifyPlatformContainerResources(&hostConfig.Resources, hyperv)
 	warnings = append(warnings, w...)
 	return warnings, err
 }
