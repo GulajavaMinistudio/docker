@@ -49,6 +49,8 @@ keywords: "API, Docker, rcli, REST, documentation"
 * `GET /info` now returns information about `DataPathPort` that is currently used in swarm
 * `GET /info` now returns `PidsLimit` boolean to indicate if the host kernel has
   PID limit support enabled.
+* `POST /containers/create` now accepts `DeviceRequests` as part of `HostConfig`.
+  Can be used to set Nvidia GPUs.
 * `GET /swarm` endpoint now returns DataPathPort info
 * `POST /containers/create` now takes `KernelMemoryTCP` field to set hard limit for kernel TCP buffer memory.
 * `GET /service` now  returns `MaxReplicas` as part of the `Placement`.
@@ -65,6 +67,7 @@ keywords: "API, Docker, rcli, REST, documentation"
   back to `shareable` by using `DefaultIpcMode` daemon configuration parameter.
 * `POST /containers/{id}/update` now accepts a `PidsLimit` field to tune a container's
   PID limit. Set `0` or `-1` for unlimited. Leave `null` to not change the current value.
+* `POST /build` now accepts `outputs` key for configuring build outputs when using BuildKit mode.
 
 ## V1.39 API changes
 
