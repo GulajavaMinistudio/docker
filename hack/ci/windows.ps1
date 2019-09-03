@@ -266,7 +266,7 @@ Try {
         }
       }
     } Catch {}
-    if ($defender) { Throw "ERROR: Windows Defender real time protection must be disabled for integration tests" }
+    if ($defender) { Write-Host -ForegroundColor Magenta "WARN: Windows Defender real time protection is enabled, which may cause some integration tests to fail" }
 
     # Make sure SOURCES_DRIVE is set
     if ($null -eq $env:SOURCES_DRIVE) { Throw "ERROR: Environment variable SOURCES_DRIVE is not set" }
@@ -717,7 +717,7 @@ Try {
     
         # Inspect the pulled or loaded image to get the version directly
         $ErrorActionPreference = "SilentlyContinue"
-        $dutimgVersion = $(&"$env:TEMP\binary\docker-$COMMITHASH" "-H=$($DASHH_CUT)" inspect  $($env:WINDOWS_BASE_IMAGE) --format "{{.OsVersion}}")
+        $dutimgVersion = $(&"$env:TEMP\binary\docker-$COMMITHASH" "-H=$($DASHH_CUT)" inspect "$($env:WINDOWS_BASE_IMAGE):$env:WINDOWS_BASE_IMAGE_TAG" --format "{{.OsVersion}}")
         $ErrorActionPreference = "Stop"
         Write-Host -ForegroundColor Green $("INFO: Version of $($env:WINDOWS_BASE_IMAGE):$env:WINDOWS_BASE_IMAGE_TAG is '"+$dutimgVersion+"'")
     }
