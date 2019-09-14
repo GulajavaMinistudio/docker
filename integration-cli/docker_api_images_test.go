@@ -14,8 +14,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/integration-cli/cli"
 	"github.com/docker/docker/integration-cli/cli/build"
-	"github.com/docker/docker/internal/test/request"
 	"github.com/docker/docker/pkg/parsers/kernel"
+	"github.com/docker/docker/testutil/request"
 	"gotest.tools/assert"
 )
 
@@ -62,8 +62,8 @@ func (s *DockerSuite) TestAPIImagesSaveAndLoad(c *testing.T) {
 		v, err := kernel.GetKernelVersion()
 		assert.NilError(c, err)
 		build, _ := strconv.Atoi(strings.Split(strings.SplitN(v.String(), " ", 3)[2][1:], ".")[0])
-		if build == 16299 {
-			c.Skip("Temporarily disabled on RS3 builds")
+		if build <= 16299 {
+			c.Skip("Temporarily disabled on RS3 and older because they are too slow. See #39909")
 		}
 	}
 

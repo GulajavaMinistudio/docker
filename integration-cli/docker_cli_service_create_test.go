@@ -76,7 +76,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithSecretSimple(c *testing.T) {
 		},
 		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", fmt.Sprintf("secrets: %s", id))
+	assert.Assert(c, id != "", "secrets: %s", id)
 
 	out, err := d.Cmd("service", "create", "--detach", "--no-resolve-image", "--name", serviceName, "--secret", testName, "busybox", "top")
 	assert.NilError(c, err, out)
@@ -118,7 +118,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithSecretSourceTargetPaths(c *testi
 			},
 			Data: []byte("TESTINGDATA " + testName + " " + testTarget),
 		})
-		assert.Assert(c, id != "", fmt.Sprintf("secrets: %s", id))
+		assert.Assert(c, id != "", "secrets: %s", id)
 
 		secretFlags = append(secretFlags, "--secret", fmt.Sprintf("source=%s,target=%s", testName, testTarget))
 	}
@@ -174,7 +174,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithSecretReferencedTwice(c *testing
 		},
 		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", fmt.Sprintf("secrets: %s", id))
+	assert.Assert(c, id != "", "secrets: %s", id)
 
 	serviceName := "svc"
 	out, err := d.Cmd("service", "create", "--detach", "--no-resolve-image", "--name", serviceName, "--secret", "source=mysecret,target=target1", "--secret", "source=mysecret,target=target2", "busybox", "top")
@@ -224,7 +224,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithConfigSimple(c *testing.T) {
 		},
 		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", fmt.Sprintf("configs: %s", id))
+	assert.Assert(c, id != "", "configs: %s", id)
 
 	out, err := d.Cmd("service", "create", "--detach", "--no-resolve-image", "--name", serviceName, "--config", testName, "busybox", "top")
 	assert.NilError(c, err, out)
@@ -265,7 +265,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithConfigSourceTargetPaths(c *testi
 			},
 			Data: []byte("TESTINGDATA " + testName + " " + testTarget),
 		})
-		assert.Assert(c, id != "", fmt.Sprintf("configs: %s", id))
+		assert.Assert(c, id != "", "configs: %s", id)
 
 		configFlags = append(configFlags, "--config", fmt.Sprintf("source=%s,target=%s", testName, testTarget))
 	}
@@ -321,7 +321,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithConfigReferencedTwice(c *testing
 		},
 		Data: []byte("TESTINGDATA"),
 	})
-	assert.Assert(c, id != "", fmt.Sprintf("configs: %s", id))
+	assert.Assert(c, id != "", "configs: %s", id)
 
 	serviceName := "svc"
 	out, err := d.Cmd("service", "create", "--detach", "--no-resolve-image", "--name", serviceName, "--config", "source=myconfig,target=target1", "--config", "source=myconfig,target=target2", "busybox", "top")
@@ -362,7 +362,7 @@ func (s *DockerSwarmSuite) TestServiceCreateWithConfigReferencedTwice(c *testing
 
 func (s *DockerSwarmSuite) TestServiceCreateMountTmpfs(c *testing.T) {
 	d := s.AddDaemon(c, true, true)
-	out, err := d.Cmd("service", "create", "--no-resolve-image", "--detach=true", "--mount", "type=tmpfs,target=/foo,tmpfs-size=1MB", "busybox", "sh", "-c", "mount | grep foo; tail -f /dev/null")
+	out, err := d.Cmd("service", "create", "--no-resolve-image", "--detach=true", "--mount", "type=tmpfs,target=/foo,tmpfs-size=1MB", "busybox", "sh", "-c", "mount | grep foo; exec tail -f /dev/null")
 	assert.NilError(c, err, out)
 	id := strings.TrimSpace(out)
 

@@ -24,8 +24,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/integration-cli/checker"
 	"github.com/docker/docker/integration-cli/daemon"
-	testdaemon "github.com/docker/docker/internal/test/daemon"
-	"github.com/docker/docker/internal/test/request"
+	testdaemon "github.com/docker/docker/testutil/daemon"
+	"github.com/docker/docker/testutil/request"
 	"github.com/docker/swarmkit/ca"
 	"github.com/pkg/errors"
 	"gotest.tools/assert"
@@ -737,7 +737,7 @@ func checkClusterHealth(c *testing.T, cl []*daemon.Daemon, managerCount, workerC
 			info swarm.Info
 		)
 
-		// check info in a waitAndAssert, because if the cluster doesn't have a leader, `info` will return an error
+		// check info in a poll.WaitOn(), because if the cluster doesn't have a leader, `info` will return an error
 		checkInfo := func(c *testing.T) (interface{}, string) {
 			client := d.NewClientT(c)
 			daemonInfo, err := client.Info(context.Background())
