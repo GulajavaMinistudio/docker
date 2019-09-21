@@ -25,13 +25,14 @@
 #
 
 ARG CROSS="false"
-ARG GO_VERSION=1.12.9
+ARG GO_VERSION=1.13.0
 ARG DEBIAN_FRONTEND=noninteractive
 
 FROM golang:${GO_VERSION}-stretch AS base
 ARG APT_MIRROR
 RUN sed -ri "s/(httpredir|deb).debian.org/${APT_MIRROR:-deb.debian.org}/g" /etc/apt/sources.list \
  && sed -ri "s/(security).debian.org/${APT_MIRROR:-security.debian.org}/g" /etc/apt/sources.list
+ENV GO111MODULE=off
 
 FROM base AS criu
 ARG DEBIAN_FRONTEND
@@ -176,8 +177,8 @@ COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN PREFIX=/build ./install.sh $INSTALL_BINARY_NAME
 
-FROM base AS gometalinter
-ENV INSTALL_BINARY_NAME=gometalinter
+FROM base AS golangci_lint
+ENV INSTALL_BINARY_NAME=golangci_lint
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN PREFIX=/build ./install.sh $INSTALL_BINARY_NAME
@@ -265,7 +266,7 @@ RUN pip3 install yamllint==1.16.0
 
 COPY --from=swagger /build/swagger* /usr/local/bin/
 COPY --from=frozen-images /build/ /docker-frozen-images
-COPY --from=gometalinter /build/ /usr/local/bin/
+COPY --from=golangci_lint /build/ /usr/local/bin/
 COPY --from=gotestsum /build/ /usr/local/bin/
 COPY --from=tomlv /build/ /usr/local/bin/
 COPY --from=vndr /build/ /usr/local/bin/
