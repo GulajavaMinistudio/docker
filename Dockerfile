@@ -60,12 +60,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM base AS swagger
 # Install go-swagger for validating swagger.yaml
-ENV GO_SWAGGER_COMMIT c28258affb0b6251755d92489ef685af8d4ff3eb
+# This is https://github.com/kolyshkin/go-swagger/tree/golang-1.13-fix
+# TODO: move to under moby/ or fix upstream go-swagger to work for us.
+ENV GO_SWAGGER_COMMIT 5793aa66d4b4112c2602c716516e24710e4adbb5
 RUN --mount=type=cache,target=/root/.cache/go-build \
 	--mount=type=cache,target=/go/pkg/mod \
 		set -x \
 		&& export GOPATH="$(mktemp -d)" \
-		&& git clone https://github.com/go-swagger/go-swagger.git "$GOPATH/src/github.com/go-swagger/go-swagger" \
+		&& git clone https://github.com/kolyshkin/go-swagger.git "$GOPATH/src/github.com/go-swagger/go-swagger" \
 		&& (cd "$GOPATH/src/github.com/go-swagger/go-swagger" && git checkout -q "$GO_SWAGGER_COMMIT") \
 		&& go build -o /build/swagger github.com/go-swagger/go-swagger/cmd/swagger \
 		&& rm -rf "$GOPATH"
@@ -89,19 +91,17 @@ RUN /download-frozen-image-v2.sh /build \
 
 FROM base AS cross-false
 
-FROM base AS cross-true
+FROM --platform=linux/amd64 base AS cross-true
 ARG DEBIAN_FRONTEND
 RUN dpkg --add-architecture armhf
 RUN dpkg --add-architecture arm64
 RUN dpkg --add-architecture armel
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
 	--mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
-		if [ "$(go env GOHOSTARCH)" = "amd64" ]; then \
-			apt-get update && apt-get install -y --no-install-recommends \
-			crossbuild-essential-armhf \
-			crossbuild-essential-arm64 \
-			crossbuild-essential-armel \
-		fi
+		apt-get update && apt-get install -y --no-install-recommends \
+		crossbuild-essential-armhf \
+		crossbuild-essential-arm64 \
+		crossbuild-essential-armel
 
 FROM cross-${CROSS} as dev-base
 
@@ -113,7 +113,7 @@ RUN --mount=type=cache,sharing=locked,id=moby-cross-false-aptlib,target=/var/lib
 		libapparmor-dev \
 		libseccomp-dev
 
-FROM cross-true AS runtime-dev-cross-true
+FROM --platform=linux/amd64 cross-true AS runtime-dev-cross-true
 ARG DEBIAN_FRONTEND
 # These crossbuild packages rely on gcc-<arch>, but this doesn't want to install
 # on non-amd64 systems.
@@ -121,25 +121,24 @@ ARG DEBIAN_FRONTEND
 # other architectures cannnot crossbuild amd64.
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
 	--mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
-		if [ "$(go env GOHOSTARCH)" = "amd64" ]; then \
-			apt-get update && apt-get install -y --no-install-recommends \
-				libseccomp-dev:armhf \
-				libseccomp-dev:arm64 \
-				libseccomp-dev:armel \
-				libapparmor-dev:armhf \
-				libapparmor-dev:arm64 \
-				libapparmor-dev:armel \
-				# install this arches seccomp here due to compat issues with the v0 builder
-				# This is as opposed to inheriting from runtime-dev-cross-false
-				libapparmor-dev \
-				libseccomp-dev \
-		fi
+		apt-get update && apt-get install -y --no-install-recommends \
+			libseccomp-dev:armhf \
+			libseccomp-dev:arm64 \
+			libseccomp-dev:armel \
+			libapparmor-dev:armhf \
+			libapparmor-dev:arm64 \
+			libapparmor-dev:armel \
+			# install this arches seccomp here due to compat issues with the v0 builder
+			# This is as opposed to inheriting from runtime-dev-cross-false
+			libapparmor-dev \
+			libseccomp-dev
 
 
 FROM runtime-dev-cross-${CROSS} AS runtime-dev
 
 FROM base AS tomlv
 ENV INSTALL_BINARY_NAME=tomlv
+ARG TOMLV_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -148,6 +147,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM base AS vndr
 ENV INSTALL_BINARY_NAME=vndr
+ARG VNDR_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -156,6 +156,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM dev-base AS containerd
 ARG DEBIAN_FRONTEND
+ARG CONTAINERD_COMMIT
 RUN --mount=type=cache,sharing=locked,id=moby-containerd-aptlib,target=/var/lib/apt \
 	--mount=type=cache,sharing=locked,id=moby-containerd-aptcache,target=/var/cache/apt \
 		apt-get update && apt-get install -y --no-install-recommends \
@@ -169,6 +170,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM dev-base AS proxy
 ENV INSTALL_BINARY_NAME=proxy
+ARG LIBNETWORK_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -177,6 +179,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM base AS golangci_lint
 ENV INSTALL_BINARY_NAME=golangci_lint
+ARG GOLANGCI_LINT_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -185,6 +188,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM base AS gotestsum
 ENV INSTALL_BINARY_NAME=gotestsum
+ARG GOTESTSUM_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -193,6 +197,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM dev-base AS dockercli
 ENV INSTALL_BINARY_NAME=dockercli
+ARG DOCKERCLI_CHANNEL
+ARG DOCKERCLI_VERSION
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -201,6 +207,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM runtime-dev AS runc
 ENV INSTALL_BINARY_NAME=runc
+ARG RUNC_COMMIT
+ARG RUNC_BUILDTAGS
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -209,6 +217,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM dev-base AS tini
 ARG DEBIAN_FRONTEND
+ARG TINI_COMMIT
 RUN --mount=type=cache,sharing=locked,id=moby-tini-aptlib,target=/var/lib/apt \
 	--mount=type=cache,sharing=locked,id=moby-tini-aptcache,target=/var/cache/apt \
 		apt-get update && apt-get install -y --no-install-recommends \
@@ -223,6 +232,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM dev-base AS rootlesskit
 ENV INSTALL_BINARY_NAME=rootlesskit
+ARG ROOTLESSKIT_COMMIT
 COPY hack/dockerfile/install/install.sh ./install.sh
 COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -299,19 +309,21 @@ WORKDIR /go/src/github.com/docker/docker
 VOLUME /var/lib/docker
 # Wrap all commands in the "docker-in-docker" script to allow nested containers
 ENTRYPOINT ["hack/dind"]
+
+FROM dev AS src
 COPY . /go/src/github.com/docker/docker
 
-FROM dev AS build-binary
+FROM src AS build-binary
 ARG DOCKER_GITCOMMIT=HEAD
 RUN --mount=type=cache,target=/root/.cache/go-build \
 	hack/make.sh binary
 
-FROM dev AS build-dynbinary
+FROM src AS build-dynbinary
 ARG DOCKER_GITCOMMIT=HEAD
 RUN --mount=type=cache,target=/root/.cache/go-build \
 	hack/make.sh dynbinary
 
-FROM dev AS build-cross
+FROM src AS build-cross
 ARG DOCKER_GITCOMMIT=HEAD
 ARG DOCKER_CROSSPLATFORMS=""
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -326,4 +338,4 @@ COPY --from=build-dynbinary /go/src/github.com/docker/docker/bundles/ /
 FROM scratch AS cross
 COPY --from=build-cross /go/src/github.com/docker/docker/bundles/ /
 
-FROM dev AS final
+FROM src AS final
