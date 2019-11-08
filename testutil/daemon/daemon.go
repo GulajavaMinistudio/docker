@@ -39,8 +39,10 @@ type nopLog struct{}
 
 func (nopLog) Logf(string, ...interface{}) {}
 
-const defaultDockerdBinary = "dockerd"
-const containerdSocket = "/var/run/docker/containerd/containerd.sock"
+const (
+	defaultDockerdBinary    = "dockerd"
+	defaultContainerdSocket = "/var/run/docker/containerd/containerd.sock"
+)
 
 var errDaemonNotStarted = errors.New("daemon not started")
 
@@ -55,7 +57,6 @@ type clientConfig struct {
 
 // Daemon represents a Docker daemon for the testing framework
 type Daemon struct {
-	GlobalFlags       []string
 	Root              string
 	Folder            string
 	Wait              chan error
@@ -75,6 +76,7 @@ type Daemon struct {
 	log                        LogT
 	pidFile                    string
 	args                       []string
+	containerdSocket           string
 
 	// swarm related field
 	swarmListenAddr string
@@ -120,11 +122,12 @@ func NewDaemon(workingDir string, ops ...Option) (*Daemon, error) {
 		storageDriver: storageDriver,
 		userlandProxy: userlandProxy,
 		// dxr stands for docker-execroot (shortened for avoiding unix(7) path length limitation)
-		execRoot:        filepath.Join(os.TempDir(), "dxr", id),
-		dockerdBinary:   defaultDockerdBinary,
-		swarmListenAddr: defaultSwarmListenAddr,
-		SwarmPort:       DefaultSwarmPort,
-		log:             nopLog{},
+		execRoot:         filepath.Join(os.TempDir(), "dxr", id),
+		dockerdBinary:    defaultDockerdBinary,
+		swarmListenAddr:  defaultSwarmListenAddr,
+		SwarmPort:        DefaultSwarmPort,
+		log:              nopLog{},
+		containerdSocket: defaultContainerdSocket,
 	}
 
 	for _, op := range ops {
@@ -252,17 +255,20 @@ func (d *Daemon) StartWithLogFile(out *os.File, providedArgs ...string) error {
 		d.pidFile = filepath.Join(d.Folder, "docker.pid")
 	}
 
-	d.args = append(d.GlobalFlags,
-		"--containerd", containerdSocket,
+	d.args = []string{
 		"--data-root", d.Root,
 		"--exec-root", d.execRoot,
 		"--pidfile", d.pidFile,
 		fmt.Sprintf("--userland-proxy=%t", d.userlandProxy),
 		"--containerd-namespace", d.id,
-		"--containerd-plugins-namespace", d.id+"p",
-	)
+		"--containerd-plugins-namespace", d.id + "p",
+	}
+	if d.containerdSocket != "" {
+		d.args = append(d.args, "--containerd", d.containerdSocket)
+	}
+
 	if d.defaultCgroupNamespaceMode != "" {
-		d.args = append(d.args, []string{"--default-cgroupns-mode", d.defaultCgroupNamespaceMode}...)
+		d.args = append(d.args, "--default-cgroupns-mode", d.defaultCgroupNamespaceMode)
 	}
 	if d.experimental {
 		d.args = append(d.args, "--experimental")
@@ -271,10 +277,10 @@ func (d *Daemon) StartWithLogFile(out *os.File, providedArgs ...string) error {
 		d.args = append(d.args, "--init")
 	}
 	if !(d.UseDefaultHost || d.UseDefaultTLSHost) {
-		d.args = append(d.args, []string{"--host", d.Sock()}...)
+		d.args = append(d.args, "--host", d.Sock())
 	}
 	if root := os.Getenv("DOCKER_REMAP_ROOT"); root != "" {
-		d.args = append(d.args, []string{"--userns-remap", root}...)
+		d.args = append(d.args, "--userns-remap", root)
 	}
 
 	// If we don't explicitly set the log-level or debug flag(-D) then
