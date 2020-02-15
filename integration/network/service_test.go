@@ -12,10 +12,10 @@ import (
 	"github.com/docker/docker/integration/internal/network"
 	"github.com/docker/docker/integration/internal/swarm"
 	"github.com/docker/docker/testutil/daemon"
-	"gotest.tools/assert"
-	"gotest.tools/icmd"
-	"gotest.tools/poll"
-	"gotest.tools/skip"
+	"gotest.tools/v3/assert"
+	"gotest.tools/v3/icmd"
+	"gotest.tools/v3/poll"
+	"gotest.tools/v3/skip"
 )
 
 // delInterface removes given network interface
@@ -193,7 +193,7 @@ func TestDaemonWithBipAndDefaultNetworkPool(t *testing.T) {
 	out, err := c.NetworkInspect(context.Background(), "bridge", types.NetworkInspectOptions{})
 	assert.NilError(t, err)
 	// Make sure BIP IP doesn't get override with new default address pool .
-	assert.Equal(t, out.IPAM.Config[0].Subnet, "172.60.0.1/16")
+	assert.Equal(t, out.IPAM.Config[0].Subnet, "172.60.0.0/16")
 	delInterface(t, defaultNetworkBridge)
 }
 

@@ -9,10 +9,10 @@ import (
 	"github.com/docker/docker/daemon/discovery"
 	"github.com/docker/docker/opts"
 	"github.com/spf13/pflag"
-	"gotest.tools/assert"
-	is "gotest.tools/assert/cmp"
-	"gotest.tools/fs"
-	"gotest.tools/skip"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
+	"gotest.tools/v3/fs"
+	"gotest.tools/v3/skip"
 )
 
 func TestDaemonConfigurationNotFound(t *testing.T) {
@@ -185,40 +185,6 @@ func TestFindConfigurationConflictsWithMergedValues(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hosts: (from flag: [unix:///var/run/docker.sock], from file: tcp://127.0.0.1:2345)") {
 		t.Fatalf("expected hosts conflict, got %v", err)
-	}
-}
-
-func TestValidateReservedNamespaceLabels(t *testing.T) {
-	for _, validLabels := range [][]string{
-		nil, // no error if there are no labels
-		{ // no error if there aren't any reserved namespace labels
-			"hello=world",
-			"label=me",
-		},
-		{ // only reserved namespaces that end with a dot are invalid
-			"com.dockerpsychnotreserved.label=value",
-			"io.dockerproject.not=reserved",
-			"org.docker.not=reserved",
-		},
-	} {
-		assert.Check(t, ValidateReservedNamespaceLabels(validLabels))
-	}
-
-	for _, invalidLabel := range []string{
-		"com.docker.feature=enabled",
-		"io.docker.configuration=0",
-		"org.dockerproject.setting=on",
-		// casing doesn't matter
-		"COM.docker.feature=enabled",
-		"io.DOCKER.CONFIGURATION=0",
-		"Org.Dockerproject.Setting=on",
-	} {
-		err := ValidateReservedNamespaceLabels([]string{
-			"valid=label",
-			invalidLabel,
-			"another=valid",
-		})
-		assert.Check(t, is.ErrorContains(err, invalidLabel))
 	}
 }
 
