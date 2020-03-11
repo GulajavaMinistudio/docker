@@ -1,6 +1,5 @@
 #!/bin/sh
 
-
 # containerd is also pinned in vendor.conf. When updating the binary
 # version you may also need to update the vendor version to pick up bug
 # fixes or new APIs.
@@ -32,5 +31,6 @@ install_containerd() {
 
 	cp bin/containerd "${PREFIX}/containerd"
 	cp bin/containerd-shim "${PREFIX}/containerd-shim"
+	cp bin/containerd-shim-runc-v2 "${PREFIX}/containerd-shim-runc-v2"
 	cp bin/ctr "${PREFIX}/ctr"
 }

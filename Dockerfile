@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.1.3-experimental
 
 ARG CROSS="false"
+ARG SYSTEMD="false"
 ARG GO_VERSION=1.13.8
 ARG DEBIAN_FRONTEND=noninteractive
 ARG VPNKIT_DIGEST=e508a17cfacc8fd39261d5b4e397df2b953690da577e2c987a47630cd0c42f8e
@@ -200,6 +201,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
         PREFIX=/build ./install.sh $INSTALL_BINARY_NAME
 
+FROM base AS shfmt
+ENV INSTALL_BINARY_NAME=shfmt
+ARG SHFMT_COMMIT
+COPY hack/dockerfile/install/install.sh ./install.sh
+COPY hack/dockerfile/install/$INSTALL_BINARY_NAME.installer ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+        PREFIX=/build ./install.sh $INSTALL_BINARY_NAME
+
 FROM dev-base AS dockercli
 ENV INSTALL_BINARY_NAME=dockercli
 ARG DOCKERCLI_CHANNEL
@@ -248,10 +258,12 @@ COPY ./contrib/dockerd-rootless.sh /build
 FROM djs55/vpnkit@sha256:${VPNKIT_DIGEST} AS vpnkit
 
 # TODO: Some of this is only really needed for testing, it would be nice to split this up
-FROM runtime-dev AS dev
+FROM runtime-dev AS dev-systemd-false
 ARG DEBIAN_FRONTEND
 RUN groupadd -r docker
-RUN useradd --create-home --gid docker unprivilegeduser
+RUN useradd --create-home --gid docker unprivilegeduser \
+ && mkdir -p /home/unprivilegeduser/.local/share/docker \
+ && chown -R unprivilegeduser /home/unprivilegeduser
 # Let us use a .bashrc file
 RUN ln -sfv /go/src/github.com/docker/docker/.bashrc ~/.bashrc
 # Activate bash completion and include Docker's completion if mounted with DOCKER_BASH_COMPLETION_PATH
@@ -278,7 +290,9 @@ RUN --mount=type=cache,sharing=locked,id=moby-dev-aptlib,target=/var/lib/apt \
             python3-pip \
             python3-setuptools \
             python3-wheel \
+            sudo \
             thin-provisioning-tools \
+            uidmap \
             vim \
             vim-common \
             xfsprogs \
@@ -304,6 +318,7 @@ COPY --from=criu          /build/ /usr/local/
 COPY --from=vndr          /build/ /usr/local/bin/
 COPY --from=gotestsum     /build/ /usr/local/bin/
 COPY --from=golangci_lint /build/ /usr/local/bin/
+COPY --from=shfmt         /build/ /usr/local/bin/
 COPY --from=runc          /build/ /usr/local/bin/
 COPY --from=containerd    /build/ /usr/local/bin/
 COPY --from=rootlesskit   /build/ /usr/local/bin/
@@ -314,8 +329,24 @@ ARG DOCKER_BUILDTAGS
 ENV DOCKER_BUILDTAGS="${DOCKER_BUILDTAGS}"
 WORKDIR /go/src/github.com/docker/docker
 VOLUME /var/lib/docker
+VOLUME /home/unprivilegeduser/.local/share/docker
 # Wrap all commands in the "docker-in-docker" script to allow nested containers
 ENTRYPOINT ["hack/dind"]
+
+FROM dev-systemd-false AS dev-systemd-true
+RUN --mount=type=cache,sharing=locked,id=moby-dev-aptlib,target=/var/lib/apt \
+    --mount=type=cache,sharing=locked,id=moby-dev-aptcache,target=/var/cache/apt \
+        apt-get update && apt-get install -y --no-install-recommends \
+            dbus \
+            dbus-user-session \
+            systemd \
+            systemd-sysv
+RUN mkdir -p hack \
+  && curl -o hack/dind-systemd https://raw.githubusercontent.com/AkihiroSuda/containerized-systemd/b70bac0daeea120456764248164c21684ade7d0d/docker-entrypoint.sh \
+  && chmod +x hack/dind-systemd
+ENTRYPOINT ["hack/dind-systemd"]
+
+FROM dev-systemd-${SYSTEMD} AS dev
 
 FROM runtime-dev AS binary-base
 ARG DOCKER_GITCOMMIT=HEAD
