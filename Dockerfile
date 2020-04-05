@@ -2,12 +2,13 @@
 
 ARG CROSS="false"
 ARG SYSTEMD="false"
-ARG GO_VERSION=1.13.8
+ARG GO_VERSION=1.13.9
 ARG DEBIAN_FRONTEND=noninteractive
 ARG VPNKIT_VERSION=0.4.0
 ARG DOCKER_BUILDTAGS="apparmor seccomp selinux"
+ARG GOLANG_IMAGE="golang:${GO_VERSION}-buster"
 
-FROM golang:${GO_VERSION}-buster AS base
+FROM ${GOLANG_IMAGE} AS base
 RUN echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
 ARG APT_MIRROR
 RUN sed -ri "s/(httpredir|deb).debian.org/${APT_MIRROR:-deb.debian.org}/g" /etc/apt/sources.list \
