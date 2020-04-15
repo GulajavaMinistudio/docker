@@ -349,10 +349,11 @@ func (daemon *Daemon) restore() error {
 					return
 				}
 			} else if !daemon.configStore.LiveRestoreEnabled {
-				if err := daemon.kill(c, c.StopSignal()); err != nil && !errdefs.IsNotFound(err) {
+				if err := daemon.shutdownContainer(c); err != nil && !errdefs.IsNotFound(err) {
 					logrus.WithError(err).WithField("container", c.ID).Error("error shutting down container")
 					return
 				}
+				c.ResetRestartManager(false)
 			}
 
 			if c.IsRunning() || c.IsPaused() {
@@ -993,8 +994,8 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 
 	lgrMap := make(map[string]image.LayerGetReleaser)
-	for os, ls := range layerStores {
-		lgrMap[os] = ls
+	for los, ls := range layerStores {
+		lgrMap[los] = ls
 	}
 	imageStore, err := image.NewImageStore(ifs, lgrMap)
 	if err != nil {
