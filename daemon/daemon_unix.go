@@ -30,7 +30,6 @@ import (
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/containerfs"
 	"github.com/docker/docker/pkg/idtools"
-	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/pkg/parsers/kernel"
 	"github.com/docker/docker/pkg/sysinfo"
@@ -78,10 +77,6 @@ const (
 	cgroupFsDriver      = "cgroupfs"
 	cgroupSystemdDriver = "systemd"
 	cgroupNoneDriver    = "none"
-
-	// DefaultRuntimeName is the default runtime to be used by
-	// containerd if none is specified
-	DefaultRuntimeName = "runc"
 )
 
 type containerGetter interface {
@@ -505,8 +500,8 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, sysIn
 	if resources.NanoCPUs > 0 && resources.CPUQuota > 0 {
 		return warnings, fmt.Errorf("Conflicting options: Nano CPUs and CPU Quota cannot both be set")
 	}
-	if resources.NanoCPUs > 0 && (!sysInfo.CPUCfsPeriod || !sysInfo.CPUCfsQuota) {
-		return warnings, fmt.Errorf("NanoCPUs can not be set, as your kernel does not support CPU cfs period/quota or the cgroup is not mounted")
+	if resources.NanoCPUs > 0 && !sysInfo.CPUCfs {
+		return warnings, fmt.Errorf("NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted")
 	}
 	// The highest precision we could get on Linux is 0.001, by setting
 	//   cpu.cfs_period_us=1000ms
@@ -523,16 +518,13 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, sysIn
 		warnings = append(warnings, "Your kernel does not support CPU shares or the cgroup is not mounted. Shares discarded.")
 		resources.CPUShares = 0
 	}
-	if resources.CPUPeriod > 0 && !sysInfo.CPUCfsPeriod {
-		warnings = append(warnings, "Your kernel does not support CPU cfs period or the cgroup is not mounted. Period discarded.")
+	if (resources.CPUPeriod != 0 || resources.CPUQuota != 0) && !sysInfo.CPUCfs {
+		warnings = append(warnings, "Your kernel does not support CPU CFS scheduler. CPU period/quota discarded.")
 		resources.CPUPeriod = 0
+		resources.CPUQuota = 0
 	}
 	if resources.CPUPeriod != 0 && (resources.CPUPeriod < 1000 || resources.CPUPeriod > 1000000) {
 		return warnings, fmt.Errorf("CPU cfs period can not be less than 1ms (i.e. 1000) or larger than 1s (i.e. 1000000)")
-	}
-	if resources.CPUQuota > 0 && !sysInfo.CPUCfsQuota {
-		warnings = append(warnings, "Your kernel does not support CPU cfs quota or the cgroup is not mounted. Quota discarded.")
-		resources.CPUQuota = 0
 	}
 	if resources.CPUQuota > 0 && resources.CPUQuota < 1000 {
 		return warnings, fmt.Errorf("CPU cfs quota can not be less than 1ms (i.e. 1000)")
@@ -729,55 +721,11 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.
 		}
 	}
 
+	if hostConfig.Runtime == config.LinuxV1RuntimeName || (hostConfig.Runtime == "" && daemon.configStore.DefaultRuntime == config.LinuxV1RuntimeName) {
+		warnings = append(warnings, fmt.Sprintf("Configured runtime %q is deprecated and will be removed in the next release.", config.LinuxV1RuntimeName))
+	}
+
 	return warnings, nil
-}
-
-func (daemon *Daemon) loadRuntimes() error {
-	return daemon.initRuntimes(daemon.configStore.Runtimes)
-}
-
-func (daemon *Daemon) initRuntimes(runtimes map[string]types.Runtime) (err error) {
-	runtimeDir := filepath.Join(daemon.configStore.Root, "runtimes")
-	// Remove old temp directory if any
-	os.RemoveAll(runtimeDir + "-old")
-	tmpDir, err := ioutils.TempDir(daemon.configStore.Root, "gen-runtimes")
-	if err != nil {
-		return errors.Wrap(err, "failed to get temp dir to generate runtime scripts")
-	}
-	defer func() {
-		if err != nil {
-			if err1 := os.RemoveAll(tmpDir); err1 != nil {
-				logrus.WithError(err1).WithField("dir", tmpDir).
-					Warn("failed to remove tmp dir")
-			}
-			return
-		}
-
-		if err = os.Rename(runtimeDir, runtimeDir+"-old"); err != nil {
-			return
-		}
-		if err = os.Rename(tmpDir, runtimeDir); err != nil {
-			err = errors.Wrap(err, "failed to setup runtimes dir, new containers may not start")
-			return
-		}
-		if err = os.RemoveAll(runtimeDir + "-old"); err != nil {
-			logrus.WithError(err).WithField("dir", tmpDir).
-				Warn("failed to remove old runtimes dir")
-		}
-	}()
-
-	for name, rt := range runtimes {
-		if len(rt.Args) == 0 {
-			continue
-		}
-
-		script := filepath.Join(tmpDir, name)
-		content := fmt.Sprintf("#!/bin/sh\n%s %s $@\n", rt.Path, strings.Join(rt.Args, " "))
-		if err := ioutil.WriteFile(script, []byte(content), 0700); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // verifyDaemonSettings performs validation of daemon config struct
@@ -808,14 +756,15 @@ func verifyDaemonSettings(conf *config.Config) error {
 		return fmt.Errorf("exec-opt native.cgroupdriver=systemd requires cgroup v2 for rootless mode")
 	}
 
-	if conf.DefaultRuntime == "" {
-		conf.DefaultRuntime = config.StockRuntimeName
+	configureRuntimes(conf)
+	if rtName := conf.GetDefaultRuntimeName(); rtName != "" {
+		if conf.GetRuntime(rtName) == nil {
+			return fmt.Errorf("specified default runtime '%s' does not exist", rtName)
+		}
+		if rtName == config.LinuxV1RuntimeName {
+			logrus.Warnf("Configured default runtime %q is deprecated and will be removed in the next release.", config.LinuxV1RuntimeName)
+		}
 	}
-	if conf.Runtimes == nil {
-		conf.Runtimes = make(map[string]types.Runtime)
-	}
-	conf.Runtimes[config.StockRuntimeName] = types.Runtime{Path: DefaultRuntimeName}
-
 	return nil
 }
 
@@ -1697,51 +1646,32 @@ func setupOOMScoreAdj(score int) error {
 	return err
 }
 
-func (daemon *Daemon) initCgroupsPath(path string) error {
+func (daemon *Daemon) initCPURtController(mnt, path string) error {
 	if path == "/" || path == "." {
 		return nil
 	}
 
-	if daemon.configStore.CPURealtimePeriod == 0 && daemon.configStore.CPURealtimeRuntime == 0 {
-		return nil
-	}
-
-	if cgroups.IsCgroup2UnifiedMode() {
-		return fmt.Errorf("daemon-scoped cpu-rt-period and cpu-rt-runtime are not implemented for cgroup v2")
-	}
-
 	// Recursively create cgroup to ensure that the system and all parent cgroups have values set
 	// for the period and runtime as this limits what the children can be set to.
-	daemon.initCgroupsPath(filepath.Dir(path))
-
-	mnt, root, err := cgroups.FindCgroupMountpointAndRoot("", "cpu")
-	if err != nil {
+	if err := daemon.initCPURtController(mnt, filepath.Dir(path)); err != nil {
 		return err
 	}
-	// When docker is run inside docker, the root is based of the host cgroup.
-	// Should this be handled in runc/libcontainer/cgroups ?
-	if strings.HasPrefix(root, "/docker/") {
-		root = "/"
-	}
 
-	path = filepath.Join(mnt, root, path)
-	sysInfo := daemon.RawSysInfo(true)
-	if err := maybeCreateCPURealTimeFile(sysInfo.CPURealtimePeriod, daemon.configStore.CPURealtimePeriod, "cpu.rt_period_us", path); err != nil {
+	path = filepath.Join(mnt, path)
+	if err := os.MkdirAll(path, 0755); err != nil {
 		return err
 	}
-	return maybeCreateCPURealTimeFile(sysInfo.CPURealtimeRuntime, daemon.configStore.CPURealtimeRuntime, "cpu.rt_runtime_us", path)
+	if err := maybeCreateCPURealTimeFile(daemon.configStore.CPURealtimePeriod, "cpu.rt_period_us", path); err != nil {
+		return err
+	}
+	return maybeCreateCPURealTimeFile(daemon.configStore.CPURealtimeRuntime, "cpu.rt_runtime_us", path)
 }
 
-func maybeCreateCPURealTimeFile(sysinfoPresent bool, configValue int64, file string, path string) error {
-	if sysinfoPresent && configValue != 0 {
-		if err := os.MkdirAll(path, 0755); err != nil {
-			return err
-		}
-		if err := ioutil.WriteFile(filepath.Join(path, file), []byte(strconv.FormatInt(configValue, 10)), 0700); err != nil {
-			return err
-		}
+func maybeCreateCPURealTimeFile(configValue int64, file string, path string) error {
+	if configValue == 0 {
+		return nil
 	}
-	return nil
+	return ioutil.WriteFile(filepath.Join(path, file), []byte(strconv.FormatInt(configValue, 10)), 0700)
 }
 
 func (daemon *Daemon) setupSeccompProfile() error {
@@ -1754,10 +1684,6 @@ func (daemon *Daemon) setupSeccompProfile() error {
 		daemon.seccompProfile = b
 	}
 	return nil
-}
-
-func (daemon *Daemon) useShimV2() bool {
-	return cgroups.IsCgroup2UnifiedMode()
 }
 
 // RawSysInfo returns *sysinfo.SysInfo .
