@@ -1202,6 +1202,42 @@ definitions:
         items:
           type: "string"
 
+  NetworkingConfig:
+    description: |
+      NetworkingConfig represents the container's networking configuration for
+      each of its interfaces.
+      It is used for the networking configs specified in the `docker create`
+      and `docker network connect` commands.
+    type: "object"
+    properties:
+      EndpointsConfig:
+        description: |
+          A mapping of network name to endpoint configuration for that network.
+        type: "object"
+        additionalProperties:
+          $ref: "#/definitions/EndpointSettings"
+    example:
+      # putting an example here, instead of using the example values from
+      # /definitions/EndpointSettings, because containers/create currently
+      # does not support attaching to multiple networks, so the example request
+      # would be confusing if it showed that multiple networks can be contained
+      # in the EndpointsConfig.
+      # TODO remove once we support multiple networks on container create (see https://github.com/moby/moby/blob/07e6b843594e061f82baa5fa23c2ff7d536c2a05/daemon/create.go#L323)
+      EndpointsConfig:
+        isolated_nw:
+          IPAMConfig:
+            IPv4Address: "172.20.30.33"
+            IPv6Address: "2001:db8:abcd::3033"
+            LinkLocalIPs:
+              - "169.254.34.68"
+              - "fe80::3468"
+          Links:
+            - "container_1"
+            - "container_2"
+          Aliases:
+            - "server_x"
+            - "server_y"
+
   NetworkSettings:
     description: "NetworkSettings exposes the network settings in the API"
     type: "object"
@@ -1838,12 +1874,24 @@ definitions:
       Shared:
         type: "boolean"
       Size:
+        description: |
+          Amount of disk space used by the build cache (in bytes).
         type: "integer"
       CreatedAt:
-        type: "integer"
+        description: |
+          Date and time at which the build cache was created in
+          [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt) format with nano-seconds.
+        type: "string"
+        format: "dateTime"
+        example: "2016-08-18T10:44:24.496525531Z"
       LastUsedAt:
-        type: "integer"
+        description: |
+          Date and time at which the build cache was last used in
+          [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt) format with nano-seconds.
+        type: "string"
+        format: "dateTime"
         x-nullable: true
+        example: "2017-08-09T07:09:37.632105588Z"
       UsageCount:
         type: "integer"
 
@@ -4069,6 +4117,103 @@ definitions:
         x-nullable: true
         $ref: "#/definitions/Health"
 
+  SystemVersion:
+    type: "object"
+    description: |
+      Response of Engine API: GET "/version"
+    properties:
+      Platform:
+        type: "object"
+        required: [Name]
+        properties:
+          Name:
+            type: "string"
+      Components:
+        type: "array"
+        description: |
+          Information about system components
+        items:
+          type: "object"
+          x-go-name: ComponentVersion
+          required: [Name, Version]
+          properties:
+            Name:
+              description: |
+                Name of the component
+              type: "string"
+              example: "Engine"
+            Version:
+              description: |
+                Version of the component
+              type: "string"
+              x-nullable: false
+              example: "19.03.12"
+            Details:
+              description: |
+                Key/value pairs of strings with additional information about the
+                component. These values are intended for informational purposes
+                only, and their content is not defined, and not part of the API
+                specification.
+
+                These messages can be printed by the client as information to the user.
+              type: "object"
+              x-nullable: true
+      Version:
+        description: "The version of the daemon"
+        type: "string"
+        example: "19.03.12"
+      ApiVersion:
+        description: |
+          The default (and highest) API version that is supported by the daemon
+        type: "string"
+        example: "1.40"
+      MinAPIVersion:
+        description: |
+          The minimum API version that is supported by the daemon
+        type: "string"
+        example: "1.12"
+      GitCommit:
+        description: |
+          The Git commit of the source code that was used to build the daemon
+        type: "string"
+        example: "48a66213fe"
+      GoVersion:
+        description: |
+          The version Go used to compile the daemon, and the version of the Go
+          runtime in use.
+        type: "string"
+        example: "go1.13.14"
+      Os:
+        description: |
+          The operating system that the daemon is running on ("linux" or "windows")
+        type: "string"
+        example: "linux"
+      Arch:
+        description: |
+          The architecture that the daemon is running on
+        type: "string"
+        example: "amd64"
+      KernelVersion:
+        description: |
+          The kernel version (`uname -r`) that the daemon is running on.
+
+          This field is omitted when empty.
+        type: "string"
+        example: "4.19.76-linuxkit"
+      Experimental:
+        description: |
+          Indicates if the daemon is started with experimental features enabled.
+
+          This field is omitted when empty / false.
+        type: "boolean"
+        example: true
+      BuildTime:
+        description: |
+          The date and time that the daemon was compiled.
+        type: "string"
+        example: "2020-06-22T15:49:27.000000000+00:00"
+
+
   SystemInfo:
     type: "object"
     properties:
@@ -5123,16 +5268,7 @@ paths:
                   HostConfig:
                     $ref: "#/definitions/HostConfig"
                   NetworkingConfig:
-                    description: "This container's networking configuration."
-                    type: "object"
-                    properties:
-                      EndpointsConfig:
-                        description: |
-                          A mapping of network name to endpoint configuration
-                          for that network.
-                        type: "object"
-                        additionalProperties:
-                          $ref: "#/definitions/EndpointSettings"
+                    $ref: "#/definitions/NetworkingConfig"
             example:
               Hostname: ""
               Domainname: ""
@@ -5194,6 +5330,14 @@ paths:
                   - {}
                 BlkioDeviceWriteIOps:
                   - {}
+                DeviceRequests:
+                  - Driver: "nvidia"
+                    Count: -1
+                    DeviceIDs": ["0", "1", "GPU-fef8089b-4820-abfc-e83e-94318197576e"]
+                    Capabilities: [["gpu", "nvidia", "compute"]]
+                    Options:
+                      property1: "string"
+                      property2: "string"
                 MemorySwappiness: 60
                 OomKillDisable: false
                 OomScoreAdj: 500
@@ -5328,7 +5472,7 @@ paths:
                 x-nullable: true
                 $ref: "#/definitions/ContainerState"
               Image:
-                description: "The container's image"
+                description: "The container's image ID"
                 type: "string"
               ResolvConfPath:
                 type: "string"
@@ -5447,6 +5591,14 @@ paths:
                 CpuRealtimePeriod: 1000000
                 CpuRealtimeRuntime: 10000
                 Devices: []
+                DeviceRequests:
+                  - Driver: "nvidia"
+                    Count: -1
+                    DeviceIDs": ["0", "1", "GPU-fef8089b-4820-abfc-e83e-94318197576e"]
+                    Capabilities: [["gpu", "nvidia", "compute"]]
+                    Options:
+                      property1: "string"
+                      property2: "string"
                 IpcMode: ""
                 LxcConf: []
                 Memory: 0
@@ -5818,6 +5970,16 @@ paths:
         If either `precpu_stats.online_cpus` or `cpu_stats.online_cpus` is
         nil then for compatibility with older daemons the length of the
         corresponding `cpu_usage.percpu_usage` array should be used.
+
+        To calculate the values shown by the `stats` command of the docker cli tool
+        the following formulas can be used:
+        * used_memory = `memory_stats.usage - memory_stats.stats.cache`
+        * available_memory = `memory_stats.limit`
+        * Memory usage % = `(used_memory / available_memory) * 100.0`
+        * cpu_delta = `cpu_stats.cpu_usage.total_usage - precpu_stats.cpu_usage.total_usage`
+        * system_cpu_delta = `cpu_stats.system_cpu_usage - precpu_stats.system_cpu_usage`
+        * number_cpus = `lenght(cpu_stats.cpu_usage.percpu_usage)` or `cpu_stats.online_cpus`
+        * CPU usage % = `(cpu_delta / system_cpu_delta) * number_cpus * 100.0`
       operationId: "ContainerStats"
       produces: ["application/json"]
       responses:
@@ -7671,63 +7833,7 @@ paths:
         200:
           description: "no error"
           schema:
-            type: "object"
-            title: "SystemVersionResponse"
-            properties:
-              Platform:
-                type: "object"
-                required: [Name]
-                properties:
-                  Name:
-                    type: "string"
-              Components:
-                type: "array"
-                items:
-                  type: "object"
-                  x-go-name: ComponentVersion
-                  required: [Name, Version]
-                  properties:
-                    Name:
-                      type: "string"
-                    Version:
-                      type: "string"
-                      x-nullable: false
-                    Details:
-                      type: "object"
-                      x-nullable: true
-
-              Version:
-                type: "string"
-              ApiVersion:
-                type: "string"
-              MinAPIVersion:
-                type: "string"
-              GitCommit:
-                type: "string"
-              GoVersion:
-                type: "string"
-              Os:
-                type: "string"
-              Arch:
-                type: "string"
-              KernelVersion:
-                type: "string"
-              Experimental:
-                type: "boolean"
-              BuildTime:
-                type: "string"
-          examples:
-            application/json:
-              Version: "17.04.0"
-              Os: "linux"
-              KernelVersion: "3.19.0-23-generic"
-              GoVersion: "go1.7.5"
-              GitCommit: "deadbee"
-              Arch: "amd64"
-              ApiVersion: "1.27"
-              MinAPIVersion: "1.12"
-              BuildTime: "2016-06-14T07:09:13.444803460+00:00"
-              Experimental: true
+            $ref: "#/definitions/SystemVersion"
         500:
           description: "server error"
           schema:
