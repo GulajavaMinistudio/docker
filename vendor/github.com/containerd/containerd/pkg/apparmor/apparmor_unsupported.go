@@ -1,4 +1,4 @@
-// +build windows
+// +build !apparmor !linux
 
 /*
    Copyright The containerd Authors.
@@ -16,18 +16,9 @@
    limitations under the License.
 */
 
-package platforms
+package apparmor
 
-import (
-	"runtime"
-
-	specs "github.com/opencontainers/image-spec/specs-go/v1"
-)
-
-// Default returns the default matcher for the platform.
-func Default() MatchComparer {
-	return Ordered(DefaultSpec(), specs.Platform{
-		OS:           "linux",
-		Architecture: runtime.GOARCH,
-	})
+//nolint: deadcode, unused
+func HostSupports() bool {
+	return false
 }
