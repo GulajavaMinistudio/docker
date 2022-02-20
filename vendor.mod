@@ -18,7 +18,7 @@ require (
 	github.com/bsphere/le_go v0.0.0-20170215134836-7a984a84b549
 	github.com/cloudflare/cfssl v0.0.0-20180323000720-5d63dbd981b5
 	github.com/containerd/cgroups v1.0.1
-	github.com/containerd/containerd v1.5.8
+	github.com/containerd/containerd v1.5.9
 	github.com/containerd/continuity v0.1.0
 	github.com/containerd/fifo v1.0.0
 	github.com/containerd/typeurl v1.0.2
@@ -35,7 +35,7 @@ require (
 	github.com/docker/libtrust v0.0.0-20150526203908-9cbd2a1374f4
 	github.com/docker/swarmkit v1.12.1-0.20210726173615-3629f50980f6
 	github.com/fluent/fluent-logger-golang v1.9.0
-	github.com/fsnotify/fsnotify v1.4.9
+	github.com/fsnotify/fsnotify v1.5.1
 	github.com/godbus/dbus/v5 v5.0.6
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/gddo v0.0.0-20190904175337-72a348e765d2
@@ -55,8 +55,8 @@ require (
 	github.com/moby/ipvs v1.0.1
 	github.com/moby/locker v1.0.1
 	github.com/moby/sys/mount v0.3.0
-	github.com/moby/sys/mountinfo v0.5.0
-	github.com/moby/sys/signal v0.6.0
+	github.com/moby/sys/mountinfo v0.6.0
+	github.com/moby/sys/signal v0.7.0
 	github.com/moby/sys/symlink v0.2.0
 	github.com/moby/term v0.0.0-20210619224110-3f7ff695adc6
 	github.com/morikuni/aec v1.0.0
@@ -157,7 +157,6 @@ replace (
 	github.com/coreos/pkg => github.com/coreos/pkg v0.0.0-20180108230652-97fdf19511ea
 	github.com/gogo/googleapis => github.com/gogo/googleapis v1.3.2
 	github.com/golang/protobuf => github.com/golang/protobuf v1.3.5
-	github.com/google/go-cmp => github.com/google/go-cmp v0.2.0
 	github.com/hashicorp/go-immutable-radix => github.com/tonistiigi/go-immutable-radix v0.0.0-20170803185627-826af9ccf0fe
 	github.com/hashicorp/go-msgpack => github.com/hashicorp/go-msgpack v0.0.0-20140221154404-71c2886f5a67
 	github.com/hashicorp/go-multierror => github.com/hashicorp/go-multierror v1.0.0
@@ -167,7 +166,6 @@ replace (
 	github.com/prometheus/procfs => github.com/prometheus/procfs v0.0.11
 	github.com/vishvananda/netlink => github.com/vishvananda/netlink v1.1.0
 	go.opencensus.io => go.opencensus.io v0.22.3
-	golang.org/x/oauth2 => golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	google.golang.org/api => google.golang.org/api v0.8.0
 	google.golang.org/genproto => google.golang.org/genproto v0.0.0-20200227132054-3f1135a288c9
 	google.golang.org/grpc => google.golang.org/grpc v1.27.1

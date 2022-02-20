@@ -183,7 +183,7 @@ func (i *ImageService) GraphDriverName() string {
 
 // ReleaseLayer releases a layer allowing it to be removed
 // called from delete.go Daemon.cleanupContainer(), and Daemon.containerExport()
-func (i *ImageService) ReleaseLayer(rwlayer layer.RWLayer, containerOS string) error {
+func (i *ImageService) ReleaseLayer(rwlayer layer.RWLayer) error {
 	metadata, err := i.layerStore.ReleaseRWLayer(rwlayer)
 	layer.LogReleaseMetadata(metadata)
 	if err != nil && !errors.Is(err, layer.ErrMountDoesNotExist) && !errors.Is(err, os.ErrNotExist) {
@@ -205,13 +205,9 @@ func (i *ImageService) LayerDiskUsage(ctx context.Context) (int64, error) {
 			case <-ctx.Done():
 				return allLayersSize, ctx.Err()
 			default:
-				size, err := l.DiffSize()
-				if err == nil {
-					if _, ok := layerRefs[l.ChainID()]; ok {
-						allLayersSize += size
-					}
-				} else {
-					logrus.Warnf("failed to get diff size for layer %v", l.ChainID())
+				size := l.DiffSize()
+				if _, ok := layerRefs[l.ChainID()]; ok {
+					allLayersSize += size
 				}
 			}
 		}
