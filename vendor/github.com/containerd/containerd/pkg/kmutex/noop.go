@@ -1,6 +1,3 @@
-//go:build freebsd
-// +build freebsd
-
 /*
    Copyright The containerd Authors.
 
@@ -17,20 +14,20 @@
    limitations under the License.
 */
 
-package fs
+package kmutex
 
-import (
-	"errors"
-	"os"
-	"syscall"
+import "context"
 
-	"golang.org/x/sys/unix"
-)
+func NewNoop() KeyedLocker {
+	return &noopMutex{}
+}
 
-func copyDevice(dst string, fi os.FileInfo) error {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return errors.New("unsupported stat type")
-	}
-	return unix.Mknod(dst, uint32(fi.Mode()), st.Rdev)
+type noopMutex struct {
+}
+
+func (*noopMutex) Lock(_ context.Context, _ string) error {
+	return nil
+}
+
+func (*noopMutex) Unlock(_ string) {
 }
