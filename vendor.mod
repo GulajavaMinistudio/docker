@@ -9,10 +9,11 @@ go 1.17
 require (
 	cloud.google.com/go v0.93.3
 	cloud.google.com/go/logging v1.4.2
+	code.cloudfoundry.org/clock v1.0.0
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1
 	github.com/Graylog2/go-gelf v0.0.0-20191017102106-1550ee647df0
 	github.com/Microsoft/go-winio v0.5.2
-	github.com/Microsoft/hcsshim v0.9.3
+	github.com/Microsoft/hcsshim v0.9.4
 	github.com/RackSec/srslog v0.0.0-20180709174129-a4725f04ec91
 	github.com/armon/go-radix v0.0.0-20180808171621-7fddfc383310
 	github.com/aws/aws-sdk-go v1.31.6
@@ -87,7 +88,6 @@ require (
 )
 
 require (
-	code.cloudfoundry.org/clock v1.0.0 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/armon/circbuf v0.0.0-20190214190532-5111143e8da2 // indirect
 	github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da // indirect
