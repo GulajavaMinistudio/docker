@@ -16,22 +16,25 @@ source "${MAKEDIR}/.go-autogen"
 (
 	export GOGC=${DOCKER_BUILD_GOGC:-1000}
 
-	if [ "$(go env GOOS)/$(go env GOARCH)" = "linux/arm" ]; then
-		# specify name of the target ARM architecture
-		case "$(go env GOARM)" in
-			5)
-				export CGO_CFLAGS="-march=armv5t"
-				export CGO_CXXFLAGS="-march=armv5t"
-				;;
-			6)
-				export CGO_CFLAGS="-march=armv6"
-				export CGO_CXXFLAGS="-march=armv6"
-				;;
-			7)
-				export CGO_CFLAGS="-march=armv7-a"
-				export CGO_CXXFLAGS="-march=armv7-a"
-				;;
-		esac
+	if [ "$(go env GOOS)/$(go env GOARCH)" != "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+		# must be cross-compiling!
+		if [ "$(go env GOOS)/$(go env GOARCH)" = "linux/arm" ]; then
+			# specify name of the target ARM architecture
+			case "$(go env GOARM)" in
+				5)
+					export CGO_CFLAGS="-march=armv5t"
+					export CGO_CXXFLAGS="-march=armv5t"
+					;;
+				6)
+					export CGO_CFLAGS="-march=armv6"
+					export CGO_CXXFLAGS="-march=armv6"
+					;;
+				7)
+					export CGO_CFLAGS="-march=armv7-a"
+					export CGO_CXXFLAGS="-march=armv7-a"
+					;;
+			esac
+		fi
 	fi
 
 	# -buildmode=pie is not supported on Windows arm64 and Linux mips*, ppc64be
@@ -60,15 +63,10 @@ source "${MAKEDIR}/.go-autogen"
 	fi
 
 	echo "Building $([ "$DOCKER_STATIC" = "1" ] && echo "static" || echo "dynamic") $DEST/$BINARY_FULLNAME ($PLATFORM_NAME)..."
-	go build \
-		-o "$DEST/$BINARY_FULLNAME" \
-		"${BUILDFLAGS[@]}" \
-		-ldflags "
-		$LDFLAGS
-		$LDFLAGS_STATIC_DOCKER
-		$DOCKER_LDFLAGS
-	" \
-		${GO_PACKAGE}
+	if [ -n "$DOCKER_DEBUG" ]; then
+		set -x
+	fi
+	go build -o "$DEST/$BINARY_FULLNAME" "${BUILDFLAGS[@]}" -ldflags "$LDFLAGS $LDFLAGS_STATIC $DOCKER_LDFLAGS" ${GO_PACKAGE}
 )
 
 echo "Created binary: $DEST/$BINARY_FULLNAME"
