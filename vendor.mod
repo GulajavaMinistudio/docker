@@ -25,9 +25,9 @@ require (
 	github.com/bsphere/le_go v0.0.0-20200109081728-fc06dab2caa8
 	github.com/cloudflare/cfssl v0.0.0-20180323000720-5d63dbd981b5
 	github.com/containerd/cgroups v1.0.4
-	github.com/containerd/containerd v1.6.16
+	github.com/containerd/containerd v1.6.18
 	github.com/containerd/continuity v0.3.0
-	github.com/containerd/fifo v1.0.0
+	github.com/containerd/fifo v1.1.0
 	github.com/containerd/typeurl v1.0.2
 	github.com/coreos/go-systemd/v22 v22.4.0
 	github.com/creack/pty v1.1.11
@@ -56,7 +56,7 @@ require (
 	github.com/klauspost/compress v1.15.12
 	github.com/miekg/dns v1.1.43
 	github.com/mistifyio/go-zfs v2.1.2-0.20190413222219-f784269be439+incompatible
-	github.com/moby/buildkit v0.11.3-0.20230206194711-49992f513921
+	github.com/moby/buildkit v0.11.3
 	github.com/moby/ipvs v1.1.0
 	github.com/moby/locker v1.0.1
 	github.com/moby/patternmatcher v0.5.0
