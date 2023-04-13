@@ -25,7 +25,7 @@ require (
 	github.com/bsphere/le_go v0.0.0-20200109081728-fc06dab2caa8
 	github.com/cloudflare/cfssl v0.0.0-20180323000720-5d63dbd981b5
 	github.com/containerd/cgroups/v3 v3.0.1
-	github.com/containerd/containerd v1.6.20
+	github.com/containerd/containerd v1.6.21-0.20230406162538-c0efc63d3907
 	github.com/containerd/continuity v0.3.0
 	github.com/containerd/fifo v1.1.0
 	github.com/containerd/typeurl/v2 v2.1.0
@@ -52,7 +52,7 @@ require (
 	github.com/hashicorp/memberlist v0.4.0
 	github.com/hashicorp/serf v0.8.5
 	github.com/imdario/mergo v0.3.13
-	github.com/ishidawataru/sctp v0.0.0-20210707070123-9a39160e9062
+	github.com/ishidawataru/sctp v0.0.0-20230406120618-7ff4192f6ff2
 	github.com/klauspost/compress v1.16.3
 	github.com/miekg/dns v1.1.43
 	github.com/mistifyio/go-zfs v2.1.2-0.20190413222219-f784269be439+incompatible
