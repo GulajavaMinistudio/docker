@@ -24,6 +24,8 @@ const (
 	volumeDataDir = "volumes"
 )
 
+var _ volume.LiveRestorer = (*volumeWrapper)(nil)
+
 type volumeWrapper struct {
 	volume.Volume
 	labels  map[string]string
@@ -67,6 +69,13 @@ func (v volumeWrapper) CachedPath() string {
 	return v.Volume.Path()
 }
 
+func (v volumeWrapper) LiveRestoreVolume(ctx context.Context, ref string) error {
+	if vv, ok := v.Volume.(volume.LiveRestorer); ok {
+		return vv.LiveRestoreVolume(ctx, ref)
+	}
+	return nil
+}
+
 // StoreOpt sets options for a VolumeStore
 type StoreOpt func(store *VolumeStore) error
 
@@ -90,13 +99,13 @@ func NewStore(rootPath string, drivers *drivers.Store, opts ...StoreOpt) (*Volum
 	if rootPath != "" {
 		// initialize metadata store
 		volPath := filepath.Join(rootPath, volumeDataDir)
-		if err := os.MkdirAll(volPath, 0750); err != nil {
+		if err := os.MkdirAll(volPath, 0o750); err != nil {
 			return nil, err
 		}
 
 		var err error
 		dbPath := filepath.Join(volPath, "metadata.db")
-		vs.db, err = bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+		vs.db, err = bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: 1 * time.Second})
 		if err != nil {
 			return nil, errors.Wrapf(err, "error while opening volume store metadata database (%s)", dbPath)
 		}
