@@ -78,18 +78,12 @@ import (
 // When the function returns true, the walk will stop.
 type NetworkWalker func(nw *Network) bool
 
-// SandboxWalker is a client provided function which will be used to walk the Sandboxes.
-// When the function returns true, the walk will stop.
-type SandboxWalker func(sb *Sandbox) bool
-
-type sandboxTable map[string]*Sandbox
-
 // Controller manages networks.
 type Controller struct {
 	id               string
 	drvRegistry      drvregistry.Networks
 	ipamRegistry     drvregistry.IPAMs
-	sandboxes        sandboxTable
+	sandboxes        map[string]*Sandbox
 	cfg              *config.Config
 	store            *datastore.Store
 	extKeyListener   net.Listener
@@ -101,7 +95,7 @@ type Controller struct {
 	defOsSbox        osl.Sandbox
 	ingressSandbox   *Sandbox
 	sboxOnce         sync.Once
-	agent            *agent
+	agent            *nwAgent
 	networkLocker    *locker.Locker
 	agentInitDone    chan struct{}
 	agentStopDone    chan struct{}
@@ -115,7 +109,7 @@ func New(cfgOptions ...config.Option) (*Controller, error) {
 	c := &Controller{
 		id:               stringid.GenerateRandomID(),
 		cfg:              config.New(cfgOptions...),
-		sandboxes:        sandboxTable{},
+		sandboxes:        map[string]*Sandbox{},
 		svcRecords:       make(map[string]*svcInfo),
 		serviceBindings:  make(map[serviceKey]*service),
 		agentInitDone:    make(chan struct{}),
@@ -213,7 +207,7 @@ func (c *Controller) SetKeys(keys []*types.EncryptionKey) error {
 	return c.handleKeyChange(keys)
 }
 
-func (c *Controller) getAgent() *agent {
+func (c *Controller) getAgent() *nwAgent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.agent
@@ -374,7 +368,7 @@ func (c *Controller) BuiltinDrivers() []string {
 // BuiltinIPAMDrivers returns the list of builtin ipam drivers.
 func (c *Controller) BuiltinIPAMDrivers() []string {
 	drivers := []string{}
-	c.ipamRegistry.WalkIPAMs(func(name string, driver ipamapi.Ipam, cap *ipamapi.Capability) bool {
+	c.ipamRegistry.WalkIPAMs(func(name string, driver ipamapi.Ipam, _ *ipamapi.Capability) bool {
 		if driver.IsBuiltIn() {
 			drivers = append(drivers, name)
 		}
@@ -392,14 +386,14 @@ func (c *Controller) processNodeDiscovery(nodes []net.IP, add bool) {
 	})
 }
 
-func (c *Controller) pushNodeDiscovery(d discoverapi.Discover, cap driverapi.Capability, nodes []net.IP, add bool) {
+func (c *Controller) pushNodeDiscovery(d discoverapi.Discover, capability driverapi.Capability, nodes []net.IP, add bool) {
 	var self net.IP
 	// try swarm-mode config
 	if agent := c.getAgent(); agent != nil {
 		self = net.ParseIP(agent.advertiseAddr)
 	}
 
-	if d == nil || cap.ConnectivityScope != scope.Global || nodes == nil {
+	if d == nil || capability.ConnectivityScope != scope.Global || nodes == nil {
 		return
 	}
 
@@ -972,31 +966,30 @@ func (c *Controller) NewSandbox(containerID string, options ...SandboxOption) (*
 	return sb, nil
 }
 
-// Sandboxes returns the list of Sandbox(s) managed by this controller.
-func (c *Controller) Sandboxes() []*Sandbox {
+// GetSandbox returns the Sandbox which has the passed id.
+//
+// It returns an [ErrInvalidID] when passing an invalid ID, or an
+// [types.NotFoundError] if no Sandbox was found for the container.
+func (c *Controller) GetSandbox(containerID string) (*Sandbox, error) {
+	if containerID == "" {
+		return nil, ErrInvalidID("id is empty")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	list := make([]*Sandbox, 0, len(c.sandboxes))
-	for _, s := range c.sandboxes {
-		// Hide stub sandboxes from libnetwork users
-		if s.isStub {
-			continue
+	if runtime.GOOS == "windows" {
+		// fast-path for Windows, which uses the container ID as sandbox ID.
+		if sb := c.sandboxes[containerID]; sb != nil && !sb.isStub {
+			return sb, nil
 		}
-
-		list = append(list, s)
-	}
-
-	return list
-}
-
-// WalkSandboxes uses the provided function to walk the Sandbox(s) managed by this controller.
-func (c *Controller) WalkSandboxes(walker SandboxWalker) {
-	for _, sb := range c.Sandboxes() {
-		if walker(sb) {
-			return
+	} else {
+		for _, sb := range c.sandboxes {
+			if sb.containerID == containerID && !sb.isStub {
+				return sb, nil
+			}
 		}
 	}
+
+	return nil, types.NotFoundErrorf("network sandbox for container %s not found", containerID)
 }
 
 // SandboxByID returns the Sandbox which has the passed id.
@@ -1032,28 +1025,6 @@ func (c *Controller) SandboxDestroy(id string) error {
 	}
 
 	return sb.Delete()
-}
-
-// SandboxContainerWalker returns a Sandbox Walker function which looks for an existing Sandbox with the passed containerID
-func SandboxContainerWalker(out **Sandbox, containerID string) SandboxWalker {
-	return func(sb *Sandbox) bool {
-		if sb.ContainerID() == containerID {
-			*out = sb
-			return true
-		}
-		return false
-	}
-}
-
-// SandboxKeyWalker returns a Sandbox Walker function which looks for an existing Sandbox with the passed key
-func SandboxKeyWalker(out **Sandbox, key string) SandboxWalker {
-	return func(sb *Sandbox) bool {
-		if sb.Key() == key {
-			*out = sb
-			return true
-		}
-		return false
-	}
 }
 
 func (c *Controller) loadDriver(networkType string) error {
@@ -1095,7 +1066,7 @@ func (c *Controller) loadIPAMDriver(name string) error {
 }
 
 func (c *Controller) getIPAMDriver(name string) (ipamapi.Ipam, *ipamapi.Capability, error) {
-	id, cap := c.ipamRegistry.IPAM(name)
+	id, caps := c.ipamRegistry.IPAM(name)
 	if id == nil {
 		// Might be a plugin name. Try loading it
 		if err := c.loadIPAMDriver(name); err != nil {
@@ -1103,13 +1074,13 @@ func (c *Controller) getIPAMDriver(name string) (ipamapi.Ipam, *ipamapi.Capabili
 		}
 
 		// Now that we resolved the plugin, try again looking up the registry
-		id, cap = c.ipamRegistry.IPAM(name)
+		id, caps = c.ipamRegistry.IPAM(name)
 		if id == nil {
 			return nil, nil, types.InvalidParameterErrorf("invalid ipam driver: %q", name)
 		}
 	}
 
-	return id, cap, nil
+	return id, caps, nil
 }
 
 // Stop stops the network controller.
