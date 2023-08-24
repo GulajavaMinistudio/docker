@@ -313,7 +313,7 @@ func (n *network) leaveSandbox() {
 // to be called while holding network lock
 func (n *network) destroySandbox() {
 	if n.sbox != nil {
-		for _, iface := range n.sbox.Info().Interfaces() {
+		for _, iface := range n.sbox.Interfaces() {
 			if err := iface.Remove(); err != nil {
 				log.G(context.TODO()).Debugf("Remove interface %s failed: %v", iface.SrcName(), err)
 			}
@@ -426,9 +426,7 @@ func (n *network) setupSubnetSandbox(s *subnet, brName, vxlanName string) error 
 	// create a bridge and vxlan device for this subnet and move it to the sandbox
 	sbox := n.sbox
 
-	if err := sbox.AddInterface(brName, "br",
-		sbox.InterfaceOptions().Address(s.gwIP),
-		sbox.InterfaceOptions().Bridge(true)); err != nil {
+	if err := sbox.AddInterface(brName, "br", osl.WithIPv4Address(s.gwIP), osl.WithIsBridge(true)); err != nil {
 		return fmt.Errorf("bridge creation in sandbox failed for subnet %q: %v", s.subnetIP.String(), err)
 	}
 
@@ -437,11 +435,10 @@ func (n *network) setupSubnetSandbox(s *subnet, brName, vxlanName string) error 
 		return err
 	}
 
-	if err := sbox.AddInterface(vxlanName, "vxlan",
-		sbox.InterfaceOptions().Master(brName)); err != nil {
+	if err := sbox.AddInterface(vxlanName, "vxlan", osl.WithMaster(brName)); err != nil {
 		// If adding vxlan device to the overlay namespace fails, remove the bridge interface we
 		// already added to the namespace. This allows the caller to try the setup again.
-		for _, iface := range sbox.Info().Interfaces() {
+		for _, iface := range sbox.Interfaces() {
 			if iface.SrcName() == brName {
 				if ierr := iface.Remove(); ierr != nil {
 					log.G(context.TODO()).Errorf("removing bridge failed from ov ns %v failed, %v", n.sbox.Key(), ierr)
@@ -468,7 +465,7 @@ func (n *network) setupSubnetSandbox(s *subnet, brName, vxlanName string) error 
 
 func setDefaultVLAN(sbox osl.Sandbox) error {
 	var brName string
-	for _, i := range sbox.Info().Interfaces() {
+	for _, i := range sbox.Interfaces() {
 		if i.Bridge() {
 			brName = i.DstName()
 		}
