@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -14,10 +12,10 @@ import (
 	"github.com/containerd/containerd/images"
 	containerdimages "github.com/containerd/containerd/images"
 	containerdlabels "github.com/containerd/containerd/labels"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/remotes"
 	"github.com/containerd/containerd/remotes/docker"
+	"github.com/containerd/log"
 	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/registry"
@@ -50,8 +48,7 @@ func (i *ImageService) PushImage(ctx context.Context, sourceRef reference.Named,
 			// Image is not tagged nor digested, that means all tags push was requested.
 
 			// Find all images with the same repository.
-			nameFilter := "^" + regexp.QuoteMeta(sourceRef.Name()) + ":" + reference.TagRegexp.String() + "$"
-			imgs, err := i.client.ImageService().List(ctx, "name~="+strconv.Quote(nameFilter))
+			imgs, err := i.getAllImagesWithRepository(ctx, sourceRef)
 			if err != nil {
 				return err
 			}
@@ -119,9 +116,6 @@ func (i *ImageService) pushRef(ctx context.Context, targetRef reference.Named, m
 	mountableBlobs, err := findMissingMountable(ctx, store, jobsQueue, target, targetRef, limiter)
 	if err != nil {
 		return err
-	}
-	for dgst := range mountableBlobs {
-		pp.addMountable(dgst)
 	}
 
 	// Create a store which fakes the local existence of possibly mountable blobs.

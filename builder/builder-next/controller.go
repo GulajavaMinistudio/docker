@@ -9,9 +9,9 @@ import (
 
 	ctd "github.com/containerd/containerd"
 	"github.com/containerd/containerd/content/local"
-	"github.com/containerd/containerd/log"
 	ctdmetadata "github.com/containerd/containerd/metadata"
 	"github.com/containerd/containerd/snapshots"
+	"github.com/containerd/log"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/builder/builder-next/adapters/containerimage"
@@ -136,6 +136,7 @@ func newSnapshotterController(ctx context.Context, rt http.RoundTripper, opt Opt
 		WorkerController: wc,
 		Frontends:        frontends,
 		CacheManager:     solver.NewCacheManager(ctx, "local", cacheStorage, worker.NewCacheResultStorage(wc)),
+		CacheStore:       cacheStorage,
 		ResolveCacheImporterFuncs: map[string]remotecache.ResolveCacheImporterFunc{
 			"gha":      gha.ResolveCacheImporterFunc(),
 			"local":    localremotecache.ResolveCacheImporterFunc(opt.SessionManager),
@@ -357,6 +358,7 @@ func newGraphDriverController(ctx context.Context, rt http.RoundTripper, opt Opt
 		WorkerController: wc,
 		Frontends:        frontends,
 		CacheManager:     solver.NewCacheManager(ctx, "local", cacheStorage, worker.NewCacheResultStorage(wc)),
+		CacheStore:       cacheStorage,
 		ResolveCacheImporterFuncs: map[string]remotecache.ResolveCacheImporterFunc{
 			"registry": localinlinecache.ResolveCacheImporterFunc(opt.SessionManager, opt.RegistryHosts, store, dist.ReferenceStore, dist.ImageStore),
 			"local":    localremotecache.ResolveCacheImporterFunc(opt.SessionManager),

@@ -12,8 +12,8 @@ import (
 
 	cerrdefs "github.com/containerd/containerd/errdefs"
 	containerdimages "github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/log"
 	cplatforms "github.com/containerd/containerd/platforms"
+	"github.com/containerd/log"
 	"github.com/distribution/reference"
 	imagetype "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/daemon/images"
@@ -333,4 +333,11 @@ func (i *ImageService) resolveImage(ctx context.Context, refOrID string) (contai
 	}
 
 	return containerdimages.Image{}, images.ErrImageDoesNotExist{Ref: parsed}
+}
+
+// getAllImagesWithRepository returns a slice of images which name is a reference
+// pointing to the same repository as the given reference.
+func (i *ImageService) getAllImagesWithRepository(ctx context.Context, ref reference.Named) ([]containerdimages.Image, error) {
+	nameFilter := "^" + regexp.QuoteMeta(ref.Name()) + ":" + reference.TagRegexp.String() + "$"
+	return i.client.ImageService().List(ctx, "name~="+strconv.Quote(nameFilter))
 }

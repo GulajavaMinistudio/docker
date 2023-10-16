@@ -16,8 +16,8 @@ import (
 
 	"github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
 	containerddefaults "github.com/containerd/containerd/defaults"
-	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/tracing"
+	"github.com/containerd/log"
 	"github.com/docker/docker/api"
 	apiserver "github.com/docker/docker/api/server"
 	buildbackend "github.com/docker/docker/api/server/backend/build"
@@ -344,6 +344,10 @@ func (cli *DaemonCli) start(opts *daemonOptions) (err error) {
 	// notify systemd that we're shutting down
 	notifyStopping()
 	shutdownDaemon(ctx, d)
+
+	if err := routerOptions.buildkit.Close(); err != nil {
+		log.G(ctx).WithError(err).Error("Failed to close buildkit")
+	}
 
 	// Stop notification processing and any background processes
 	cancel()
