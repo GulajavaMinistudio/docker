@@ -58,7 +58,7 @@ require (
 	github.com/hashicorp/serf v0.8.5
 	github.com/imdario/mergo v0.3.13
 	github.com/ishidawataru/sctp v0.0.0-20230406120618-7ff4192f6ff2
-	github.com/klauspost/compress v1.16.5
+	github.com/klauspost/compress v1.17.2
 	github.com/miekg/dns v1.1.43
 	github.com/mistifyio/go-zfs/v3 v3.0.1
 	github.com/mitchellh/copystructure v1.2.0
@@ -73,6 +73,7 @@ require (
 	github.com/moby/sys/sequential v0.5.0
 	github.com/moby/sys/signal v0.7.0
 	github.com/moby/sys/symlink v0.2.0
+	github.com/moby/sys/user v0.1.0
 	github.com/moby/term v0.5.0
 	github.com/morikuni/aec v1.0.0
 	github.com/opencontainers/go-digest v1.0.0
