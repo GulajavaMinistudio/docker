@@ -510,15 +510,6 @@ func (n *Network) CopyTo(o datastore.KVObject) error {
 	return nil
 }
 
-func (n *Network) DataScope() string {
-	s := n.Scope()
-	// All swarm scope networks have local datascope
-	if s == scope.Swarm {
-		s = scope.Local
-	}
-	return s
-}
-
 func (n *Network) getEpCnt() *endpointCnt {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -1300,44 +1291,48 @@ func (n *Network) EndpointByID(id string) (*Endpoint, error) {
 	return ep, nil
 }
 
+// updateSvcRecord adds or deletes local DNS records for a given Endpoint.
 func (n *Network) updateSvcRecord(ep *Endpoint, isAdd bool) {
+	iface := ep.Iface()
+	if iface == nil || iface.Address() == nil {
+		return
+	}
+
 	var ipv6 net.IP
 	epName := ep.Name()
-	if iface := ep.Iface(); iface != nil && iface.Address() != nil {
-		myAliases := ep.MyAliases()
-		if iface.AddressIPv6() != nil {
-			ipv6 = iface.AddressIPv6().IP
-		}
+	myAliases := ep.MyAliases()
+	if iface.AddressIPv6() != nil {
+		ipv6 = iface.AddressIPv6().IP
+	}
 
-		serviceID := ep.svcID
-		if serviceID == "" {
-			serviceID = ep.ID()
-		}
-		if isAdd {
-			// If anonymous endpoint has an alias use the first alias
-			// for ip->name mapping. Not having the reverse mapping
-			// breaks some apps
-			if ep.isAnonymous() {
-				if len(myAliases) > 0 {
-					n.addSvcRecords(ep.ID(), myAliases[0], serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
-				}
-			} else {
-				n.addSvcRecords(ep.ID(), epName, serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
-			}
-			for _, alias := range myAliases {
-				n.addSvcRecords(ep.ID(), alias, serviceID, iface.Address().IP, ipv6, false, "updateSvcRecord")
+	serviceID := ep.svcID
+	if serviceID == "" {
+		serviceID = ep.ID()
+	}
+	if isAdd {
+		// If anonymous endpoint has an alias use the first alias
+		// for ip->name mapping. Not having the reverse mapping
+		// breaks some apps
+		if ep.isAnonymous() {
+			if len(myAliases) > 0 {
+				n.addSvcRecords(ep.ID(), myAliases[0], serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
 			}
 		} else {
-			if ep.isAnonymous() {
-				if len(myAliases) > 0 {
-					n.deleteSvcRecords(ep.ID(), myAliases[0], serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
-				}
-			} else {
-				n.deleteSvcRecords(ep.ID(), epName, serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
+			n.addSvcRecords(ep.ID(), epName, serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
+		}
+		for _, alias := range myAliases {
+			n.addSvcRecords(ep.ID(), alias, serviceID, iface.Address().IP, ipv6, false, "updateSvcRecord")
+		}
+	} else {
+		if ep.isAnonymous() {
+			if len(myAliases) > 0 {
+				n.deleteSvcRecords(ep.ID(), myAliases[0], serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
 			}
-			for _, alias := range myAliases {
-				n.deleteSvcRecords(ep.ID(), alias, serviceID, iface.Address().IP, ipv6, false, "updateSvcRecord")
-			}
+		} else {
+			n.deleteSvcRecords(ep.ID(), epName, serviceID, iface.Address().IP, ipv6, true, "updateSvcRecord")
+		}
+		for _, alias := range myAliases {
+			n.deleteSvcRecords(ep.ID(), alias, serviceID, iface.Address().IP, ipv6, false, "updateSvcRecord")
 		}
 	}
 }
@@ -1769,7 +1764,7 @@ func (n *Network) deriveAddressSpace() (string, error) {
 	if err != nil {
 		return "", types.NotFoundErrorf("failed to get default address space: %v", err)
 	}
-	if n.DataScope() == scope.Global {
+	if n.Scope() == scope.Global {
 		return global, nil
 	}
 	return local, nil
