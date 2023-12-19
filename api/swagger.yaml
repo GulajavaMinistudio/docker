@@ -3981,6 +3981,44 @@ definitions:
       - "remove"
       - "orphaned"
 
+  ContainerStatus:
+    type: "object"
+    description: "represents the status of a container."
+    properties:
+      ContainerID:
+        type: "string"
+      PID:
+        type: "integer"
+      ExitCode:
+        type: "integer"
+
+  PortStatus:
+    type: "object"
+    description: "represents the port status of a task's host ports whose service has published host ports"
+    properties:
+      Ports:
+        type: "array"
+        items:
+          $ref: "#/definitions/EndpointPortConfig"
+
+  TaskStatus:
+    type: "object"
+    description: "represents the status of a task."
+    properties:
+      Timestamp:
+        type: "string"
+        format: "dateTime"
+      State:
+        $ref: "#/definitions/TaskState"
+      Message:
+        type: "string"
+      Err:
+        type: "string"
+      ContainerStatus:
+        $ref: "#/definitions/ContainerStatus"
+      PortStatus:
+        $ref: "#/definitions/PortStatus"
+
   Task:
     type: "object"
     properties:
@@ -4016,26 +4054,7 @@ definitions:
       AssignedGenericResources:
         $ref: "#/definitions/GenericResources"
       Status:
-        type: "object"
-        properties:
-          Timestamp:
-            type: "string"
-            format: "dateTime"
-          State:
-            $ref: "#/definitions/TaskState"
-          Message:
-            type: "string"
-          Err:
-            type: "string"
-          ContainerStatus:
-            type: "object"
-            properties:
-              ContainerID:
-                type: "string"
-              PID:
-                type: "integer"
-              ExitCode:
-                type: "integer"
+        $ref: "#/definitions/TaskStatus"
       DesiredState:
         $ref: "#/definitions/TaskState"
       JobIteration:
@@ -5618,6 +5637,28 @@ definitions:
         items:
           type: "string"
         example: ["--debug", "--systemd-cgroup=false"]
+      status:
+        description: |
+          Information specific to the runtime.
+
+          While this API specification does not define data provided by runtimes,
+          the following well-known properties may be provided by runtimes:
+
+          `org.opencontainers.runtime-spec.features`: features structure as defined
+          in the [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec/blob/main/features.md),
+          in a JSON string representation.
+
+          <p><br /></p>
+
+          > **Note**: The information returned in this field, including the
+          > formatting of values and labels, should not be considered stable,
+          > and may change without notice.
+        type: "object"
+        x-nullable: true
+        additionalProperties:
+          type: "string"
+        example:
+          "org.opencontainers.runtime-spec.features": "{\"ociVersionMin\":\"1.0.0\",\"ociVersionMax\":\"1.1.0\",\"...\":\"...\"}"
 
   Commit:
     description: |
