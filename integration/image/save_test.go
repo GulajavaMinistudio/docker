@@ -52,9 +52,9 @@ func tarIndexFS(t *testing.T, rdr io.Reader) fs.FS {
 }
 
 func TestSaveCheckTimes(t *testing.T) {
-	t.Parallel()
-
 	ctx := setupTest(t)
+
+	t.Parallel()
 	client := testEnv.APIClient()
 
 	const repoName = "busybox:latest"
@@ -90,10 +90,11 @@ func TestSaveCheckTimes(t *testing.T) {
 // Regression test for https://github.com/moby/moby/issues/47065
 func TestSaveCheckManifestLayers(t *testing.T) {
 	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.44"), "OCI layout support was introduced in v25")
-	t.Parallel()
 
 	ctx := setupTest(t)
 	client := testEnv.APIClient()
+
+	t.Parallel()
 
 	const repoName = "busybox:latest"
 	img, _, err := client.ImageInspectWithRaw(ctx, repoName)
@@ -119,6 +120,14 @@ func TestSaveCheckManifestLayers(t *testing.T) {
 	assert.NilError(t, json.Unmarshal(manifestData, &manifest))
 
 	assert.Check(t, is.Len(manifest.Layers, len(img.RootFS.Layers)))
+	for _, l := range manifest.Layers {
+		stat, err := fs.Stat(tarfs, "blobs/sha256/"+l.Digest.Encoded())
+		if !assert.Check(t, err) {
+			continue
+		}
+
+		assert.Check(t, is.Equal(l.Size, stat.Size()))
+	}
 }
 
 func TestSaveRepoWithMultipleImages(t *testing.T) {
