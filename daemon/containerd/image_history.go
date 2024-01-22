@@ -6,12 +6,11 @@ import (
 
 	"github.com/containerd/containerd/images"
 	containerdimages "github.com/containerd/containerd/images"
-	cplatforms "github.com/containerd/containerd/platforms"
+	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
 	imagetype "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/pkg/platforms"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -28,7 +27,7 @@ func (i *ImageService) ImageHistory(ctx context.Context, name string) ([]*imaget
 
 	cs := i.client.ContentStore()
 	// TODO: pass platform in from the CLI
-	platform := platforms.AllPlatformsWithPreference(cplatforms.Default())
+	platform := matchAllWithPreference(platforms.Default())
 
 	var presentImages []ocispec.Image
 	err = i.walkImageManifests(ctx, img, func(img *ImageManifest) error {
@@ -36,11 +35,11 @@ func (i *ImageService) ImageHistory(ctx context.Context, name string) ([]*imaget
 		if err != nil {
 			return err
 		}
-		var ociimage ocispec.Image
-		if err := readConfig(ctx, cs, conf, &ociimage); err != nil {
+		var ociImage ocispec.Image
+		if err := readConfig(ctx, cs, conf, &ociImage); err != nil {
 			return err
 		}
-		presentImages = append(presentImages, ociimage)
+		presentImages = append(presentImages, ociImage)
 		return nil
 	})
 	if err != nil {
@@ -53,7 +52,7 @@ func (i *ImageService) ImageHistory(ctx context.Context, name string) ([]*imaget
 	sort.SliceStable(presentImages, func(i, j int) bool {
 		return platform.Less(presentImages[i].Platform, presentImages[j].Platform)
 	})
-	ociimage := presentImages[0]
+	ociImage := presentImages[0]
 
 	var (
 		history []*imagetype.HistoryResponseItem
@@ -61,7 +60,7 @@ func (i *ImageService) ImageHistory(ctx context.Context, name string) ([]*imaget
 	)
 	s := i.client.SnapshotService(i.snapshotter)
 
-	diffIDs := ociimage.RootFS.DiffIDs
+	diffIDs := ociImage.RootFS.DiffIDs
 	for i := range diffIDs {
 		chainID := identity.ChainID(diffIDs[0 : i+1]).String()
 
@@ -73,7 +72,7 @@ func (i *ImageService) ImageHistory(ctx context.Context, name string) ([]*imaget
 		sizes = append(sizes, use.Size)
 	}
 
-	for _, h := range ociimage.History {
+	for _, h := range ociImage.History {
 		size := int64(0)
 		if !h.EmptyLayer {
 			if len(sizes) == 0 {
