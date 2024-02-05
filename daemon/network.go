@@ -305,10 +305,6 @@ func (daemon *Daemon) createNetwork(cfg *config.Config, create types.NetworkCrea
 		return nil, errdefs.Forbidden(errors.New(`This node is not a swarm manager. Use "docker swarm init" or "docker swarm join" to connect this node to swarm and try again.`))
 	}
 
-	if network.HasIPv6Subnets(create.IPAM) {
-		create.EnableIPv6 = true
-	}
-
 	networkOptions := make(map[string]string)
 	for k, v := range create.Options {
 		networkOptions[k] = v
@@ -335,7 +331,7 @@ func (daemon *Daemon) createNetwork(cfg *config.Config, create types.NetworkCrea
 		nwOptions = append(nwOptions, libnetwork.NetworkOptionConfigOnly())
 	}
 
-	if err := network.ValidateIPAM(create.IPAM); err != nil {
+	if err := network.ValidateIPAM(create.IPAM, create.EnableIPv6); err != nil {
 		return nil, errdefs.InvalidParameter(err)
 	}
 
@@ -788,7 +784,7 @@ func (daemon *Daemon) clearAttachableNetworks() {
 }
 
 // buildCreateEndpointOptions builds endpoint options from a given network.
-func buildCreateEndpointOptions(c *container.Container, n *libnetwork.Network, epConfig *network.EndpointSettings, sb *libnetwork.Sandbox, daemonDNS []string) ([]libnetwork.EndpointOption, error) {
+func buildCreateEndpointOptions(c *container.Container, n *libnetwork.Network, epConfig *internalnetwork.EndpointSettings, sb *libnetwork.Sandbox, daemonDNS []string) ([]libnetwork.EndpointOption, error) {
 	var createOptions []libnetwork.EndpointOption
 	var genericOptions = make(options.Generic)
 
@@ -824,8 +820,8 @@ func buildCreateEndpointOptions(c *container.Container, n *libnetwork.Network, e
 			createOptions = append(createOptions, libnetwork.EndpointOptionGeneric(options.Generic{k: v}))
 		}
 
-		if epConfig.MacAddress != "" {
-			mac, err := net.ParseMAC(epConfig.MacAddress)
+		if epConfig.DesiredMacAddress != "" {
+			mac, err := net.ParseMAC(epConfig.DesiredMacAddress)
 			if err != nil {
 				return nil, err
 			}
