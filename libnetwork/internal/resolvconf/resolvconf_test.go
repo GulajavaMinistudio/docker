@@ -351,16 +351,22 @@ func TestRCTransformForIntNS(t *testing.T) {
 			expExtServers: []ExtDNSEntry{mke("10.0.0.1", false)},
 		},
 		{
-			name:          "IPv4 and IPv6, ipv6 enabled",
-			input:         "nameserver 10.0.0.1\nnameserver fdb6:b8fe:b528::1",
-			ipv6:          true,
-			expExtServers: []ExtDNSEntry{mke("10.0.0.1", false)},
+			name:  "IPv4 and IPv6, ipv6 enabled",
+			input: "nameserver 10.0.0.1\nnameserver fdb6:b8fe:b528::1",
+			ipv6:  true,
+			expExtServers: []ExtDNSEntry{
+				mke("10.0.0.1", false),
+				mke("fdb6:b8fe:b528::1", false),
+			},
 		},
 		{
-			name:          "IPv4 and IPv6, ipv6 disabled",
-			input:         "nameserver 10.0.0.1\nnameserver fdb6:b8fe:b528::1",
-			ipv6:          false,
-			expExtServers: []ExtDNSEntry{mke("10.0.0.1", false)},
+			name:  "IPv4 and IPv6, ipv6 disabled",
+			input: "nameserver 10.0.0.1\nnameserver fdb6:b8fe:b528::1",
+			ipv6:  false,
+			expExtServers: []ExtDNSEntry{
+				mke("10.0.0.1", false),
+				mke("fdb6:b8fe:b528::1", true),
+			},
 		},
 		{
 			name:          "IPv4 localhost",
@@ -384,37 +390,46 @@ func TestRCTransformForIntNS(t *testing.T) {
 			expExtServers: []ExtDNSEntry{mke("127.0.0.53", true)},
 		},
 		{
-			name:  "IPv6 addr, IPv6 enabled",
-			input: "nameserver fd14:6e0e:f855::1",
+			name:          "IPv6 addr, IPv6 enabled",
+			input:         "nameserver fd14:6e0e:f855::1",
+			ipv6:          true,
+			expExtServers: []ExtDNSEntry{mke("fd14:6e0e:f855::1", false)},
+		},
+		{
+			name:  "IPv4 and IPv6 localhost, IPv6 disabled",
+			input: "nameserver 127.0.0.53\nnameserver ::1",
+			ipv6:  false,
+			expExtServers: []ExtDNSEntry{
+				mke("127.0.0.53", true),
+				mke("::1", true),
+			},
+		},
+		{
+			name:  "IPv4 and IPv6 localhost, ipv6 enabled",
+			input: "nameserver 127.0.0.53\nnameserver ::1",
 			ipv6:  true,
-			// Note that there are no ext servers in this case, the internal resolver
-			// will only look up container names. The default nameservers aren't added
-			// because the host's IPv6 nameserver remains in the container's resolv.conf,
-			// (because only IPv4 ext servers are currently allowed).
+			expExtServers: []ExtDNSEntry{
+				mke("127.0.0.53", true),
+				mke("::1", true),
+			},
 		},
 		{
-			name:          "IPv4 and IPv6 localhost, IPv6 disabled",
-			input:         "nameserver 127.0.0.53\nnameserver ::1",
-			ipv6:          false,
-			expExtServers: []ExtDNSEntry{mke("127.0.0.53", true)},
+			name:  "IPv4 localhost, IPv6 private, IPv6 enabled",
+			input: "nameserver 127.0.0.53\nnameserver fd3e:2d1a:1f5a::1",
+			ipv6:  true,
+			expExtServers: []ExtDNSEntry{
+				mke("127.0.0.53", true),
+				mke("fd3e:2d1a:1f5a::1", false),
+			},
 		},
 		{
-			name:          "IPv4 and IPv6 localhost, ipv6 enabled",
-			input:         "nameserver 127.0.0.53\nnameserver ::1",
-			ipv6:          true,
-			expExtServers: []ExtDNSEntry{mke("127.0.0.53", true)},
-		},
-		{
-			name:          "IPv4 localhost, IPv6 private, IPv6 enabled",
-			input:         "nameserver 127.0.0.53\nnameserver fd3e:2d1a:1f5a::1",
-			ipv6:          true,
-			expExtServers: []ExtDNSEntry{mke("127.0.0.53", true)},
-		},
-		{
-			name:          "IPv4 localhost, IPv6 private, IPv6 disabled",
-			input:         "nameserver 127.0.0.53\nnameserver fd3e:2d1a:1f5a::1",
-			ipv6:          false,
-			expExtServers: []ExtDNSEntry{mke("127.0.0.53", true)},
+			name:  "IPv4 localhost, IPv6 private, IPv6 disabled",
+			input: "nameserver 127.0.0.53\nnameserver fd3e:2d1a:1f5a::1",
+			ipv6:  false,
+			expExtServers: []ExtDNSEntry{
+				mke("127.0.0.53", true),
+				mke("fd3e:2d1a:1f5a::1", true),
+			},
 		},
 		{
 			name:  "No host nameserver, no iv6",
@@ -496,6 +511,60 @@ func TestRCTransformForIntNS(t *testing.T) {
 			assert.Check(t, golden.String(string(content), t.Name()+".golden"))
 			assert.Check(t, is.DeepEqual(extNameServers, tc.expExtServers,
 				cmpopts.EquateComparable(netip.Addr{})))
+		})
+	}
+}
+
+// Check that invalid ndots options in the host's file are ignored, unless
+// starting the internal resolver (which requires an ndots option), in which
+// case invalid ndots should be replaced.
+func TestRCTransformForIntNSInvalidNdots(t *testing.T) {
+	testcases := []struct {
+		name         string
+		options      string
+		reqdOptions  []string
+		expVal       string
+		expOptions   []string
+		expNDotsFrom string
+	}{
+		{
+			name:         "Negative value",
+			options:      "options ndots:-1",
+			expOptions:   []string{"ndots:-1"},
+			expVal:       "-1",
+			expNDotsFrom: "host",
+		},
+		{
+			name:         "Invalid values with reqd ndots",
+			options:      "options ndots:-1 foo:bar ndots ndots:",
+			reqdOptions:  []string{"ndots:2"},
+			expVal:       "2",
+			expNDotsFrom: "internal",
+			expOptions:   []string{"foo:bar", "ndots:2"},
+		},
+		{
+			name:         "Valid value with reqd ndots",
+			options:      "options ndots:1 foo:bar ndots ndots:",
+			reqdOptions:  []string{"ndots:2"},
+			expVal:       "1",
+			expNDotsFrom: "host",
+			expOptions:   []string{"ndots:1", "foo:bar"},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "nameserver 8.8.8.8\n" + tc.options
+			rc, err := Parse(bytes.NewBuffer([]byte(content)), "/etc/resolv.conf")
+			assert.NilError(t, err)
+			_, err = rc.TransformForIntNS(false, netip.MustParseAddr("127.0.0.11"), tc.reqdOptions)
+			assert.NilError(t, err)
+
+			val, found := rc.Option("ndots")
+			assert.Check(t, is.Equal(found, true))
+			assert.Check(t, is.Equal(val, tc.expVal))
+			assert.Check(t, is.Equal(rc.md.NDotsFrom, tc.expNDotsFrom))
+			assert.Check(t, is.DeepEqual(rc.options, tc.expOptions))
 		})
 	}
 }

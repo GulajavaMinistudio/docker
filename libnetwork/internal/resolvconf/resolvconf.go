@@ -235,7 +235,7 @@ func (rc *ResolvConf) TransformForLegacyNw(ipv6 bool) {
 // use in a network sandbox that has an internal DNS resolver.
 //   - Add internalNS as a nameserver.
 //   - Remove other nameservers, stashing them as ExtNameServers for the
-//     internal resolver to use. (Apart from IPv6 nameservers, if keepIPv6.)
+//     internal resolver to use.
 //   - Mark ExtNameServers that must be used in the host namespace.
 //   - If no ExtNameServer addresses are found, use the defaults.
 //   - Return an error if an "ndots" option inherited from the host's config, or
@@ -244,7 +244,7 @@ func (rc *ResolvConf) TransformForLegacyNw(ipv6 bool) {
 //     option includes a ':', and an option with a matching prefix exists, it
 //     is not modified.
 func (rc *ResolvConf) TransformForIntNS(
-	keepIPv6 bool,
+	ipv6 bool,
 	internalNS netip.Addr,
 	reqdOptions []string,
 ) ([]ExtDNSEntry, error) {
@@ -254,30 +254,16 @@ func (rc *ResolvConf) TransformForIntNS(
 	// internal nameserver.
 	rc.md.ExtNameServers = nil
 	for _, addr := range rc.nameServers {
-		// The internal resolver only uses IPv4 addresses so, keep IPv6 nameservers in
-		// the container's file if keepIPv6, else drop them.
-		if addr.Is6() {
-			if keepIPv6 {
-				newNSs = append(newNSs, addr)
-			}
-		} else {
-			// Extract this NS. Mark loopback addresses that did not come from an override as
-			// 'HostLoopback'. Upstream requests for these servers will be made in the host's
-			// network namespace. (So, '--dns 127.0.0.53' means use a nameserver listening on
-			// the container's loopback interface. But, if the host's resolv.conf contains
-			// 'nameserver 127.0.0.53', the host's resolver will be used.)
-			//
-			//  TODO(robmry) - why only loopback addresses?
-			//   Addresses from the host's resolv.conf must be usable in the host's namespace,
-			//   and a lookup from the container's namespace is more expensive? And, for
-			//   example, if the host has a nameserver with an IPv6 LL address with a zone-id,
-			//   it won't work from the container's namespace (now, while the address is left in
-			//   the container's resolv.conf, or in future for the internal resolver).
-			rc.md.ExtNameServers = append(rc.md.ExtNameServers, ExtDNSEntry{
-				Addr:         addr,
-				HostLoopback: addr.IsLoopback() && !rc.md.NSOverride,
-			})
-		}
+		// Extract this NS. Mark addresses that did not come from an override, but will
+		// definitely not work in the container's namespace as 'HostLoopback'. Upstream
+		// requests for these servers will be made in the host's network namespace. (So,
+		// '--dns 127.0.0.53' means use a nameserver listening on the container's
+		// loopback interface. But, if the host's resolv.conf contains 'nameserver
+		// 127.0.0.53', the host's resolver will be used.)
+		rc.md.ExtNameServers = append(rc.md.ExtNameServers, ExtDNSEntry{
+			Addr:         addr,
+			HostLoopback: !rc.md.NSOverride && (addr.IsLoopback() || (addr.Is6() && !ipv6) || addr.Zone() != ""),
+		})
 	}
 	rc.nameServers = newNSs
 
@@ -285,27 +271,23 @@ func (rc *ResolvConf) TransformForIntNS(
 	// internal resolver, use the defaults as ext nameservers.
 	if len(rc.md.ExtNameServers) == 0 && len(rc.nameServers) == 1 {
 		log.G(context.TODO()).Info("No non-localhost DNS nameservers are left in resolv.conf. Using default external servers")
-		for _, addr := range defaultNSAddrs(keepIPv6) {
+		for _, addr := range defaultNSAddrs(ipv6) {
 			rc.md.ExtNameServers = append(rc.md.ExtNameServers, ExtDNSEntry{Addr: addr})
 		}
 		rc.md.UsedDefaultNS = true
 	}
 
-	// Validate the ndots option from host config or overrides, if present.
-	// TODO(robmry) - pre-existing behaviour, but ...
-	//   Validating ndots from an override is good, but not-liking something in the
-	//   host's resolv.conf isn't a reason to fail - just remove? (And it'll be
-	//   replaced by the value in reqdOptions, if given.)
-	if ndots, exists := rc.Option("ndots"); exists {
-		if n, err := strconv.Atoi(ndots); err != nil || n < 0 {
-			return nil, errdefs.InvalidParameter(
-				fmt.Errorf("invalid number for ndots option: %v", ndots))
-		}
-	}
-	// For each option required by the nameserver, add it if not already
-	// present (if the option already has a value don't change it).
+	// For each option required by the nameserver, add it if not already present. If
+	// the option is already present, don't override it. Apart from ndots - if the
+	// ndots value is invalid and an ndots option is required, replace the existing
+	// value.
 	for _, opt := range reqdOptions {
 		optName, _, _ := strings.Cut(opt, ":")
+		if optName == "ndots" {
+			rc.options = removeInvalidNDots(rc.options)
+			// No need to update rc.md.NDotsFrom, if there is no ndots option remaining,
+			// it'll be set to "internal" when the required value is added.
+		}
 		if _, exists := rc.Option(optName); !exists {
 			rc.AddOption(opt)
 		}
@@ -450,18 +432,8 @@ func UserModified(rcPath, rcHashPath string) (bool, error) {
 func (rc *ResolvConf) processLine(line string) {
 	fields := strings.Fields(line)
 
-	// Strip comments.
-	// TODO(robmry) - ignore comment chars except in column 0.
-	//   This preserves old behaviour, but it's wrong. For example, resolvers
-	//   will honour the option in line "options # ndots:0" (and ignore the
-	//   "#" as an unknown option).
-	for i, s := range fields {
-		if s[0] == '#' || s[0] == ';' {
-			fields = fields[:i]
-			break
-		}
-	}
-	if len(fields) == 0 {
+	// Strip blank lines and comments.
+	if len(fields) == 0 || fields[0][0] == '#' || fields[0][0] == ';' {
 		return
 	}
 
@@ -488,10 +460,8 @@ func (rc *ResolvConf) processLine(line string) {
 		if len(fields) < 2 {
 			return
 		}
-		// Replace options from earlier directives.
-		// TODO(robmry) - preserving incorrect behaviour, options should accumulate.
-		//     rc.options = append(rc.options, fields[1:]...)
-		rc.options = fields[1:]
+		// Accumulate options.
+		rc.options = append(rc.options, fields[1:]...)
 	default:
 		// Copy anything that's not a recognised directive.
 		rc.other = append(rc.other, line)
@@ -505,4 +475,23 @@ func defaultNSAddrs(ipv6 bool) []netip.Addr {
 		addrs = append(addrs, defaultIPv6NSs...)
 	}
 	return addrs
+}
+
+// removeInvalidNDots filters ill-formed "ndots" settings from options.
+// The backing array of the options slice is reused.
+func removeInvalidNDots(options []string) []string {
+	n := 0
+	for _, opt := range options {
+		k, v, _ := strings.Cut(opt, ":")
+		if k == "ndots" {
+			ndots, err := strconv.Atoi(v)
+			if err != nil || ndots < 0 {
+				continue
+			}
+		}
+		options[n] = opt
+		n++
+	}
+	clear(options[n:]) // Zero out the obsolete elements, for GC.
+	return options[:n]
 }
