@@ -3,8 +3,10 @@ package containerd
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/containerd/containerd/content"
@@ -27,6 +29,7 @@ import (
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 )
 
 // Subset of ocispec.Image that only contains Labels
@@ -91,16 +94,6 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 		return usage.Size, nil
 	}
 
-	var (
-		summaries = make([]*imagetypes.Summary, 0, len(imgs))
-		root      []*[]digest.Digest
-		layers    map[digest.Digest]int
-	)
-	if opts.SharedSize {
-		root = make([]*[]digest.Digest, 0, len(imgs))
-		layers = make(map[digest.Digest]int)
-	}
-
 	uniqueImages := map[digest.Digest]images.Image{}
 	tagsByDigest := map[digest.Digest][]string{}
 	intermediateImages := map[digest.Digest]struct{}{}
@@ -152,20 +145,48 @@ func (i *ImageService) Images(ctx context.Context, opts imagetypes.ListOptions) 
 		tagsByDigest[dgst] = append(tagsByDigest[dgst], reference.FamiliarString(ref))
 	}
 
+	resultsMut := sync.Mutex{}
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(runtime.NumCPU() * 2)
+
+	var (
+		summaries = make([]*imagetypes.Summary, 0, len(imgs))
+		root      []*[]digest.Digest
+		layers    map[digest.Digest]int
+	)
+	if opts.SharedSize {
+		root = make([]*[]digest.Digest, 0, len(imgs))
+		layers = make(map[digest.Digest]int)
+	}
+
 	for _, img := range uniqueImages {
-		image, allChainsIDs, err := i.imageSummary(ctx, img, platformMatcher, opts, tagsByDigest)
-		if err != nil || image == nil {
-			return nil, err
-		}
-
-		summaries = append(summaries, image)
-
-		if opts.SharedSize {
-			root = append(root, &allChainsIDs)
-			for _, id := range allChainsIDs {
-				layers[id] = layers[id] + 1
+		img := img
+		eg.Go(func() error {
+			image, allChainsIDs, err := i.imageSummary(egCtx, img, platformMatcher, opts, tagsByDigest)
+			if err != nil {
+				return err
 			}
-		}
+			// No error, but image should be skipped.
+			if image == nil {
+				return nil
+			}
+
+			resultsMut.Lock()
+			summaries = append(summaries, image)
+
+			if opts.SharedSize {
+				root = append(root, &allChainsIDs)
+				for _, id := range allChainsIDs {
+					layers[id] = layers[id] + 1
+				}
+			}
+			resultsMut.Unlock()
+			return nil
+		})
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
 	}
 
 	if opts.SharedSize {
@@ -234,10 +255,12 @@ func (i *ImageService) imageSummary(ctx context.Context, img images.Image, platf
 
 		target := img.Target()
 
-		chainIDs, err := img.RootFS(ctx)
+		diffIDs, err := img.RootFS(ctx)
 		if err != nil {
 			return err
 		}
+
+		chainIDs := identity.ChainIDs(diffIDs)
 
 		ts, _, err := i.singlePlatformSize(ctx, img)
 		if err != nil {
@@ -467,7 +490,7 @@ func (i *ImageService) setupFilters(ctx context.Context, imageFilters filters.Ar
 		return nil, err
 	}
 
-	labelFn, err := setupLabelFilter(i.content, imageFilters)
+	labelFn, err := setupLabelFilter(ctx, i.content, imageFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +540,7 @@ func (i *ImageService) setupFilters(ctx context.Context, imageFilters filters.Ar
 // setupLabelFilter parses filter args for "label" and "label!" and returns a
 // filter func which will check if any image config from the given image has
 // labels that match given predicates.
-func setupLabelFilter(store content.Store, fltrs filters.Args) (func(image images.Image) bool, error) {
+func setupLabelFilter(ctx context.Context, store content.Store, fltrs filters.Args) (func(image images.Image) bool, error) {
 	type labelCheck struct {
 		key        string
 		value      string
@@ -551,19 +574,25 @@ func setupLabelFilter(store content.Store, fltrs filters.Args) (func(image image
 		}
 	}
 
-	return func(image images.Image) bool {
-		ctx := context.TODO()
+	if len(checks) == 0 {
+		return nil, nil
+	}
 
+	return func(image images.Image) bool {
 		// This is not an error, but a signal to Dispatch that it should stop
 		// processing more content (otherwise it will run for all children).
 		// It will be returned once a matching config is found.
 		errFoundConfig := errors.New("success, found matching config")
+
 		err := images.Dispatch(ctx, presentChildrenHandler(store, images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) (subdescs []ocispec.Descriptor, err error) {
 			if !images.IsConfigType(desc.MediaType) {
 				return nil, nil
 			}
 			var cfg configLabels
 			if err := readConfig(ctx, store, desc, &cfg); err != nil {
+				if errdefs.IsNotFound(err) {
+					return nil, nil
+				}
 				return nil, err
 			}
 
@@ -623,6 +652,11 @@ func computeSharedSize(chainIDs []digest.Digest, layers map[digest.Digest]int, s
 		}
 		size, err := sizeFn(chainID)
 		if err != nil {
+			// Several images might share the same layer and neither of them
+			// might be unpacked (for example if it's a non-host platform).
+			if cerrdefs.IsNotFound(err) {
+				continue
+			}
 			return 0, err
 		}
 		sharedSize += size

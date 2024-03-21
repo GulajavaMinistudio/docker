@@ -8,12 +8,12 @@ ARG XX_VERSION=1.4.0
 ARG VPNKIT_VERSION=0.5.0
 
 ARG DOCKERCLI_REPOSITORY="https://github.com/docker/cli.git"
-ARG DOCKERCLI_VERSION=v26.0.0-rc1
+ARG DOCKERCLI_VERSION=v26.0.0-rc2
 # cli version used for integration-cli tests
 ARG DOCKERCLI_INTEGRATION_REPOSITORY="https://github.com/docker/cli.git"
 ARG DOCKERCLI_INTEGRATION_VERSION=v17.06.2-ce
 ARG BUILDX_VERSION=0.13.1
-ARG COMPOSE_VERSION=v2.24.7
+ARG COMPOSE_VERSION=v2.25.0
 
 ARG SYSTEMD="false"
 ARG DOCKER_STATIC=1
@@ -245,7 +245,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
      && /build/gotestsum --version
 
 FROM base AS shfmt
-ARG SHFMT_VERSION=v3.6.0
+ARG SHFMT_VERSION=v3.8.0
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
         GOBIN=/build/ GO111MODULE=on go install "mvdan.cc/sh/v3/cmd/shfmt@${SHFMT_VERSION}" \
