@@ -13,9 +13,11 @@ import (
 	networktypes "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/integration/internal/container"
 	"github.com/docker/docker/integration/internal/network"
+	"github.com/docker/docker/libnetwork/drivers/bridge"
 	"github.com/docker/docker/libnetwork/netlabel"
 	"github.com/docker/docker/testutil"
 	"github.com/docker/docker/testutil/daemon"
+	"github.com/docker/go-connections/nat"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -813,8 +815,7 @@ func TestSetInterfaceSysctl(t *testing.T) {
 
 // With a read-only "/proc/sys/net" filesystem (simulated using env var
 // DOCKER_TEST_RO_DISABLE_IPV6), check that if IPv6 can't be disabled on a
-// container interface, container creation fails - unless the error is ignored by
-// setting env var DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE=1.
+// container interface, container creation fails.
 // Regression test for https://github.com/moby/moby/issues/47751
 func TestReadOnlySlashProc(t *testing.T) {
 	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
@@ -830,18 +831,11 @@ func TestReadOnlySlashProc(t *testing.T) {
 			name: "Normality",
 		},
 		{
-			name: "Read only no workaround",
+			name: "Read only",
 			daemonEnv: []string{
 				"DOCKER_TEST_RO_DISABLE_IPV6=1",
 			},
-			expErr: "failed to disable IPv6 on container's interface eth0, set env var DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE=1 to ignore this error",
-		},
-		{
-			name: "Read only with workaround",
-			daemonEnv: []string{
-				"DOCKER_TEST_RO_DISABLE_IPV6=1",
-				"DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE=1",
-			},
+			expErr: "failed to disable IPv6 on container's interface eth0",
 		},
 	}
 
@@ -918,5 +912,86 @@ func TestSetEndpointSysctl(t *testing.T) {
 				assert.Check(t, is.Equal(strings.TrimSpace(stdout), val))
 			})
 		}
+	}
+}
+
+func TestDisableNAT(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows", "bridge driver option doesn't apply to Windows")
+
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+
+	c := d.NewClientT(t)
+	defer c.Close()
+
+	testcases := []struct {
+		name       string
+		gwMode4    string
+		gwMode6    string
+		expPortMap nat.PortMap
+	}{
+		{
+			name: "defaults",
+			expPortMap: nat.PortMap{
+				"80/tcp": []nat.PortBinding{
+					{HostIP: "0.0.0.0", HostPort: "8080"},
+					{HostIP: "::", HostPort: "8080"},
+				},
+			},
+		},
+		{
+			name:    "nat4 routed6",
+			gwMode4: "nat",
+			gwMode6: "routed",
+			expPortMap: nat.PortMap{
+				"80/tcp": []nat.PortBinding{
+					{HostIP: "0.0.0.0", HostPort: "8080"},
+					{HostIP: "::", HostPort: ""},
+				},
+			},
+		},
+		{
+			name:    "nat6 routed4",
+			gwMode4: "routed",
+			gwMode6: "nat",
+			expPortMap: nat.PortMap{
+				"80/tcp": []nat.PortBinding{
+					{HostIP: "0.0.0.0", HostPort: ""},
+					{HostIP: "::", HostPort: "8080"},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testutil.StartSpan(ctx, t)
+
+			const netName = "testnet"
+			nwOpts := []func(options *networktypes.CreateOptions){
+				network.WithIPv6(),
+				network.WithIPAM("fd2a:a2c3:4448::/64", "fd2a:a2c3:4448::1"),
+			}
+			if tc.gwMode4 != "" {
+				nwOpts = append(nwOpts, network.WithOption(bridge.IPv4GatewayMode, tc.gwMode4))
+			}
+			if tc.gwMode6 != "" {
+				nwOpts = append(nwOpts, network.WithOption(bridge.IPv6GatewayMode, tc.gwMode6))
+			}
+			network.CreateNoError(ctx, t, c, netName, nwOpts...)
+			defer network.RemoveNoError(ctx, t, c, netName)
+
+			id := container.Run(ctx, t, c,
+				container.WithNetworkMode(netName),
+				container.WithExposedPorts("80/tcp"),
+				container.WithPortMap(nat.PortMap{"80/tcp": {{HostPort: "8080"}}}),
+			)
+			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+
+			inspect := container.Inspect(ctx, t, c, id)
+			assert.Check(t, is.DeepEqual(inspect.NetworkSettings.Ports, tc.expPortMap))
+		})
 	}
 }
