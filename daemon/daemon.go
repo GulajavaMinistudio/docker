@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.19
+//go:build go1.21
 
 // Package daemon exposes the functions that occur on the host server
 // that the Docker daemon is running.
@@ -58,7 +58,6 @@ import (
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/image"
-	"github.com/docker/docker/internal/compatcontext"
 	"github.com/docker/docker/layer"
 	libcontainerdtypes "github.com/docker/docker/libcontainerd/types"
 	"github.com/docker/docker/libnetwork"
@@ -76,7 +75,6 @@ import (
 	pluginexec "github.com/docker/docker/plugin/executor/containerd"
 	refstore "github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
-	"github.com/docker/docker/runconfig"
 	volumesservice "github.com/docker/docker/volume/service"
 	"github.com/moby/buildkit/util/grpcerrors"
 	"github.com/moby/buildkit/util/resolver"
@@ -392,7 +390,7 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 				//
 				// TODO(aker): remove this migration code once the next LTM version of MCR is released.
 				if c.HostConfig.NetworkMode.IsDefault() {
-					c.HostConfig.NetworkMode = runconfig.DefaultDaemonNetworkMode()
+					c.HostConfig.NetworkMode = network.DefaultNetwork
 					if nw, ok := c.NetworkSettings.Networks[networktypes.NetworkDefault]; ok {
 						c.NetworkSettings.Networks[c.HostConfig.NetworkMode.NetworkName()] = nw
 						delete(c.NetworkSettings.Networks, networktypes.NetworkDefault)
@@ -473,7 +471,7 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 						c.Paused = false
 						daemon.setStateCounter(c)
 						daemon.initHealthMonitor(c)
-						if err := c.CheckpointTo(daemon.containersReplica); err != nil {
+						if err := c.CheckpointTo(context.TODO(), daemon.containersReplica); err != nil {
 							baseLogger.WithError(err).Error("failed to update paused container state")
 						}
 						c.Unlock()
@@ -497,7 +495,7 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 					}
 					c.SetStopped(&ces)
 					daemon.Cleanup(context.TODO(), c)
-					if err := c.CheckpointTo(daemon.containersReplica); err != nil {
+					if err := c.CheckpointTo(context.TODO(), daemon.containersReplica); err != nil {
 						baseLogger.WithError(err).Error("failed to update stopped container state")
 					}
 					c.Unlock()
@@ -564,7 +562,7 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 				// state and leave further processing up to them.
 				c.RemovalInProgress = false
 				c.Dead = true
-				if err := c.CheckpointTo(daemon.containersReplica); err != nil {
+				if err := c.CheckpointTo(context.TODO(), daemon.containersReplica); err != nil {
 					baseLogger.WithError(err).Error("failed to update RemovalInProgress container state")
 				} else {
 					baseLogger.Debugf("reset RemovalInProgress state for container")
@@ -584,15 +582,22 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 		return fmt.Errorf("Error initializing network controller: %v", err)
 	}
 
-	// If port-mapping failed during live-restore of a container, perhaps because
-	// a host port that was previously mapped to a container is now in-use by some
-	// other process - ports will not be mapped for the restored container, but it
-	// will be running. Replace the restored mappings in NetworkSettings with the
-	// current state so that the problem is visible in 'inspect'.
 	for _, c := range containers {
-		if sb, err := daemon.netController.SandboxByID(c.NetworkSettings.SandboxID); err == nil {
-			c.NetworkSettings.Ports = getPortMapInfo(sb)
+		sb, err := daemon.netController.SandboxByID(c.NetworkSettings.SandboxID)
+		if err != nil {
+			// If this container's sandbox doesn't exist anymore, that's because
+			// the netController gc'ed it during its initialization. In that case,
+			// we need to clear all the network-related state carried by that
+			// container.
+			daemon.releaseNetwork(context.WithoutCancel(context.TODO()), c)
+			continue
 		}
+		// If port-mapping failed during live-restore of a container, perhaps because
+		// a host port that was previously mapped to a container is now in-use by some
+		// other process - ports will not be mapped for the restored container, but it
+		// will be running. Replace the restored mappings in NetworkSettings with the
+		// current state so that the problem is visible in 'inspect'.
+		c.NetworkSettings.Ports = getPortMapInfo(sb)
 	}
 
 	// Now that all the containers are registered, register the links
@@ -844,6 +849,9 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 
 	// Do we have a disabled network?
 	config.DisableBridge = isBridgeNetworkDisabled(config)
+
+	// Setup the resolv.conf
+	setupResolvConf(config)
 
 	idMapping, err := setupRemappedRoot(config)
 	if err != nil {
@@ -1282,7 +1290,7 @@ func (daemon *Daemon) waitForStartupDone() {
 }
 
 func (daemon *Daemon) shutdownContainer(c *container.Container) error {
-	ctx := compatcontext.WithoutCancel(context.TODO())
+	ctx := context.WithoutCancel(context.TODO())
 
 	// If container failed to exit in stopTimeout seconds of SIGTERM, then using the force
 	if err := daemon.containerStop(ctx, c, containertypes.StopOptions{}); err != nil {
@@ -1480,13 +1488,11 @@ func isBridgeNetworkDisabled(conf *config.Config) bool {
 }
 
 func (daemon *Daemon) networkOptions(conf *config.Config, pg plugingetter.PluginGetter, hostID string, activeSandboxes map[string]interface{}) ([]nwconfig.Option, error) {
-	dd := runconfig.DefaultDaemonNetworkMode()
-
 	options := []nwconfig.Option{
 		nwconfig.OptionDataDir(conf.Root),
 		nwconfig.OptionExecRoot(conf.GetExecRoot()),
-		nwconfig.OptionDefaultDriver(string(dd)),
-		nwconfig.OptionDefaultNetwork(dd.NetworkName()),
+		nwconfig.OptionDefaultDriver(network.DefaultNetwork),
+		nwconfig.OptionDefaultNetwork(network.DefaultNetwork),
 		nwconfig.OptionLabels(conf.Labels),
 		nwconfig.OptionNetworkControlPlaneMTU(conf.NetworkControlPlaneMTU),
 		driverOptions(conf),
@@ -1615,7 +1621,7 @@ func RemapContainerdNamespaces(config *config.Config) (ns string, pluginNs strin
 func (daemon *Daemon) checkpointAndSave(container *container.Container) error {
 	container.Lock()
 	defer container.Unlock()
-	if err := container.CheckpointTo(daemon.containersReplica); err != nil {
+	if err := container.CheckpointTo(context.TODO(), daemon.containersReplica); err != nil {
 		return fmt.Errorf("Error saving container state: %v", err)
 	}
 	return nil

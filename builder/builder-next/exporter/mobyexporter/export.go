@@ -10,8 +10,8 @@ import (
 	"github.com/containerd/containerd/leases"
 	"github.com/containerd/log"
 	distref "github.com/distribution/reference"
+	builderexporter "github.com/docker/docker/builder/builder-next/exporter"
 	"github.com/docker/docker/image"
-	"github.com/docker/docker/internal/compatcontext"
 	"github.com/docker/docker/layer"
 	"github.com/moby/buildkit/exporter"
 	"github.com/moby/buildkit/exporter/containerimage"
@@ -33,11 +33,12 @@ type ImageTagger interface {
 
 // Opt defines a struct for creating new exporter
 type Opt struct {
-	ImageStore   image.Store
-	Differ       Differ
-	ImageTagger  ImageTagger
-	ContentStore content.Store
-	LeaseManager leases.Manager
+	ImageStore            image.Store
+	Differ                Differ
+	ImageTagger           ImageTagger
+	ContentStore          content.Store
+	LeaseManager          leases.Manager
+	ImageExportedCallback builderexporter.ImageExportedByBuildkit
 }
 
 type imageExporter struct {
@@ -227,6 +228,10 @@ func (e *imageExporterInstance) Export(ctx context.Context, inp *exporter.Source
 		return nil, nil, fmt.Errorf("failed to create a temporary descriptor reference: %w", err)
 	}
 
+	if e.opt.ImageExportedCallback != nil {
+		e.opt.ImageExportedCallback(ctx, id.String(), descRef.Descriptor())
+	}
+
 	return resp, descRef, nil
 }
 
@@ -240,7 +245,7 @@ func (e *imageExporterInstance) newTempReference(ctx context.Context, config []b
 	}
 
 	unlease := func(ctx context.Context) error {
-		err := done(compatcontext.WithoutCancel(ctx))
+		err := done(context.WithoutCancel(ctx))
 		if err != nil {
 			log.G(ctx).WithError(err).Error("failed to delete descriptor reference lease")
 		}

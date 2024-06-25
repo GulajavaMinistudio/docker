@@ -1,3 +1,6 @@
+// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
+//go:build go1.21
+
 package bridge
 
 import (
@@ -506,7 +509,7 @@ func setPerPortNAT(b portBinding, ipv iptables.IPVersion, proxyPath string, brid
 		args = append(args, "!", "-i", bridgeName)
 	}
 	rule := iptRule{ipv: ipv, table: iptables.Nat, chain: DockerChain, args: args}
-	if err := programChainRule(rule, "DNAT", enable); err != nil {
+	if err := appendOrDelChainRule(rule, "DNAT", enable); err != nil {
 		return err
 	}
 
@@ -518,7 +521,7 @@ func setPerPortNAT(b portBinding, ipv iptables.IPVersion, proxyPath string, brid
 		"-j", "MASQUERADE",
 	}
 	rule = iptRule{ipv: ipv, table: iptables.Nat, chain: "POSTROUTING", args: args}
-	if err := programChainRule(rule, "MASQUERADE", enable); err != nil {
+	if err := appendOrDelChainRule(rule, "MASQUERADE", enable); err != nil {
 		return err
 	}
 
@@ -535,7 +538,7 @@ func setPerPortForwarding(b portBinding, ipv iptables.IPVersion, bridgeName stri
 		"-j", "ACCEPT",
 	}
 	rule := iptRule{ipv: ipv, table: iptables.Filter, chain: DockerChain, args: args}
-	if err := programChainRule(rule, "MASQUERADE", enable); err != nil {
+	if err := appendOrDelChainRule(rule, "MASQUERADE", enable); err != nil {
 		return err
 	}
 
@@ -554,7 +557,7 @@ func setPerPortForwarding(b portBinding, ipv iptables.IPVersion, bridgeName stri
 			"--checksum-fill",
 		}
 		rule := iptRule{ipv: ipv, table: iptables.Mangle, chain: "POSTROUTING", args: args}
-		if err := programChainRule(rule, "MASQUERADE", enable); err != nil {
+		if err := appendOrDelChainRule(rule, "MASQUERADE", enable); err != nil {
 			return err
 		}
 	}
