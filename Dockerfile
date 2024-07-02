@@ -8,12 +8,12 @@ ARG XX_VERSION=1.4.0
 ARG VPNKIT_VERSION=0.5.0
 
 ARG DOCKERCLI_REPOSITORY="https://github.com/docker/cli.git"
-ARG DOCKERCLI_VERSION=v26.1.0
+ARG DOCKERCLI_VERSION=v27.0.2
 # cli version used for integration-cli tests
 ARG DOCKERCLI_INTEGRATION_REPOSITORY="https://github.com/docker/cli.git"
 ARG DOCKERCLI_INTEGRATION_VERSION=v17.06.2-ce
 ARG BUILDX_VERSION=0.15.1
-ARG COMPOSE_VERSION=v2.27.1
+ARG COMPOSE_VERSION=v2.28.1
 
 ARG SYSTEMD="false"
 ARG DOCKER_STATIC=1
@@ -229,7 +229,7 @@ FROM binary-dummy AS containerd-windows
 FROM containerd-${TARGETOS} AS containerd
 
 FROM base AS golangci_lint
-ARG GOLANGCI_LINT_VERSION=v1.55.2
+ARG GOLANGCI_LINT_VERSION=v1.59.1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
         GOBIN=/build/ GO111MODULE=on go install "github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}" \
