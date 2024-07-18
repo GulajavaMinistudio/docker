@@ -26,8 +26,6 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-var truncatedID = regexp.MustCompile(`^(sha256:)?([a-f0-9]{4,64})$`)
-
 var errInconsistentData error = errors.New("consistency error: data changed during operation, retry")
 
 // GetImage returns an image corresponding to the image referred to by refOrID.
@@ -235,7 +233,7 @@ func (i *ImageService) GetImageManifest(ctx context.Context, refOrID string, opt
 
 // size returns the total size of the image's packed resources.
 func (i *ImageService) size(ctx context.Context, desc ocispec.Descriptor, platform platforms.MatchComparer) (int64, error) {
-	var size int64
+	var size atomic.Int64
 
 	cs := i.content
 	handler := containerdimages.LimitManifests(containerdimages.ChildrenHandler(cs), platform, 1)
@@ -248,7 +246,7 @@ func (i *ImageService) size(ctx context.Context, desc ocispec.Descriptor, platfo
 			}
 		}
 
-		atomic.AddInt64(&size, desc.Size)
+		size.Add(desc.Size)
 
 		return children, nil
 	}
@@ -258,7 +256,7 @@ func (i *ImageService) size(ctx context.Context, desc ocispec.Descriptor, platfo
 		return 0, err
 	}
 
-	return size, nil
+	return size.Load(), nil
 }
 
 // resolveDescriptor searches for a descriptor based on the given
@@ -326,9 +324,8 @@ func (i *ImageService) resolveImage(ctx context.Context, refOrID string) (contai
 		}
 	}
 
-	// If the identifier could be a short ID, attempt to match
-	if truncatedID.MatchString(refOrID) {
-		idWithoutAlgo := strings.TrimPrefix(refOrID, "sha256:")
+	// If the identifier could be a short ID, attempt to match.
+	if idWithoutAlgo := checkTruncatedID(refOrID); idWithoutAlgo != "" { // Valid ID.
 		filters := []string{
 			fmt.Sprintf("name==%q", ref), // Or it could just look like one.
 			"target.digest~=" + strconv.Quote(fmt.Sprintf(`^sha256:%s[0-9a-fA-F]{%d}$`, regexp.QuoteMeta(idWithoutAlgo), 64-len(idWithoutAlgo))),
@@ -435,7 +432,7 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 	var dgst digest.Digest
 	var img *containerdimages.Image
 
-	if truncatedID.MatchString(refOrID) {
+	if idWithoutAlgo := checkTruncatedID(refOrID); idWithoutAlgo != "" { // Valid ID.
 		if d, ok := parsed.(reference.Digested); ok {
 			if cimg, err := i.images.Get(ctx, d.String()); err == nil {
 				img = &cimg
@@ -451,7 +448,6 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 				dgst = d.Digest()
 			}
 		} else {
-			idWithoutAlgo := strings.TrimPrefix(refOrID, "sha256:")
 			name := reference.TagNameOnly(parsed.(reference.Named)).String()
 			filters := []string{
 				fmt.Sprintf("name==%q", name), // Or it could just look like one.
@@ -550,4 +546,21 @@ func (i *ImageService) resolveAllReferences(ctx context.Context, refOrID string)
 	}
 
 	return img, imgs, nil
+}
+
+// checkTruncatedID checks id for validity. If id is invalid, an empty string
+// is returned; otherwise, the ID without the optional "sha256:" prefix is
+// returned. The validity check is equivalent to
+// regexp.MustCompile(`^(sha256:)?([a-f0-9]{4,64})$`).MatchString(id).
+func checkTruncatedID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if l := len(id); l < 4 || l > 64 {
+		return ""
+	}
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return id
 }
