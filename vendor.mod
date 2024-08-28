@@ -11,7 +11,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.3.0
 	cloud.google.com/go/logging v1.9.0
 	code.cloudfoundry.org/clock v1.1.0
-	dario.cat/mergo v1.0.0
+	dario.cat/mergo v1.0.1
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20230811130428-ced1acdcaa24
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1
 	github.com/Graylog2/go-gelf v0.0.0-20191017102106-1550ee647df0
@@ -26,7 +26,7 @@ require (
 	github.com/aws/smithy-go v1.19.0
 	github.com/cloudflare/cfssl v1.6.4
 	github.com/containerd/cgroups/v3 v3.0.3
-	github.com/containerd/containerd v1.7.20
+	github.com/containerd/containerd v1.7.21
 	github.com/containerd/containerd/api v1.7.19
 	github.com/containerd/continuity v0.4.3
 	github.com/containerd/errdefs v0.1.0
@@ -94,7 +94,7 @@ require (
 	github.com/tonistiigi/fsutil v0.0.0-20240424095704-91a3fc46842c
 	github.com/tonistiigi/go-archvariant v1.0.0
 	github.com/vbatts/tar-split v0.11.5
-	github.com/vishvananda/netlink v1.2.1-beta.2
+	github.com/vishvananda/netlink v1.3.0
 	github.com/vishvananda/netns v0.0.4
 	go.etcd.io/bbolt v1.3.10
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.46.1
