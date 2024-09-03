@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.21.13
+ARG GO_VERSION=1.22.6
 ARG BASE_DEBIAN_DISTRO="bookworm"
 ARG GOLANG_IMAGE="golang:${GO_VERSION}-${BASE_DEBIAN_DISTRO}"
 ARG XX_VERSION=1.5.0
@@ -22,7 +22,7 @@ ARG DOCKER_STATIC=1
 # https://hub.docker.com/r/distribution/distribution. This version of
 # the registry is used to test schema 2 manifests. Generally,  the version
 # specified here should match a current release.
-ARG REGISTRY_VERSION=2.8.3
+ARG REGISTRY_VERSION=3.0.0-beta.1
 
 # delve is currently only supported on linux/amd64 and linux/arm64;
 # https://github.com/go-delve/delve/blob/v1.8.1/pkg/proc/native/support_sentinel.go#L1-L6
@@ -229,7 +229,7 @@ FROM binary-dummy AS containerd-windows
 FROM containerd-${TARGETOS} AS containerd
 
 FROM base AS golangci_lint
-ARG GOLANGCI_LINT_VERSION=v1.59.1
+ARG GOLANGCI_LINT_VERSION=v1.60.2
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
         GOBIN=/build/ GO111MODULE=on go install "github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}" \
