@@ -609,7 +609,7 @@ func (n *Network) UnmarshalJSON(b []byte) (err error) {
 		n.enableIPv4 = v.(bool)
 	} else {
 		// Set enableIPv4 for IPv4 networks created before the option was added.
-		n.enableIPv4 = len(n.ipamV4Info) > 0
+		_, n.enableIPv4 = netMap["ipamV4Info"]
 	}
 	n.enableIPv6 = netMap["enableIPv6"].(bool)
 
@@ -2050,7 +2050,7 @@ func (n *Network) ResolveIP(_ context.Context, ip string) string {
 	// because of interleave of different events from different sources (local container create vs
 	// network db notifications)
 	// In such cases the resolution will be based on the first element of the set, and can vary
-	// during the system stabilitation
+	// during the system stabilization
 	elem := elemSet[0]
 	if elem.extResolver {
 		return ""

@@ -1,3 +1,6 @@
+// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
+//go:build go1.21
+
 package loggerutils // import "github.com/docker/docker/daemon/logger/loggerutils"
 
 import (
@@ -97,7 +100,7 @@ type Decoder interface {
 	// Reset resets the decoder
 	// Reset is called for certain events, such as log rotations
 	Reset(io.Reader)
-	// Decode decodes the next log messeage from the stream
+	// Decode decodes the next log message from the stream
 	Decode() (*logger.Message, error)
 	// Close signals to the decoder that it can release whatever resources it was using.
 	Close()
