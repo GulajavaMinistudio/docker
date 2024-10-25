@@ -81,9 +81,9 @@ require (
 	github.com/morikuni/aec v1.0.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.0
-	github.com/opencontainers/runc v1.1.14
+	github.com/opencontainers/runc v1.2.0
 	github.com/opencontainers/runtime-spec v1.2.0
-	github.com/opencontainers/selinux v1.11.0
+	github.com/opencontainers/selinux v1.11.1
 	github.com/pelletier/go-toml v1.9.5
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.17.0
@@ -111,7 +111,7 @@ require (
 	golang.org/x/time v0.6.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20240604185151-ef581f913117
 	google.golang.org/grpc v1.66.2
-	google.golang.org/protobuf v1.34.1
+	google.golang.org/protobuf v1.34.2
 	gotest.tools/v3 v3.5.1
 	resenje.org/singleflight v0.4.1
 	tags.cncf.io/container-device-interface v0.8.0
@@ -139,7 +139,7 @@ require (
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cilium/ebpf v0.12.3 // indirect
+	github.com/cilium/ebpf v0.16.0 // indirect
 	github.com/container-storage-interface/spec v1.5.0 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/containerd/go-cni v1.1.10 // indirect
@@ -149,7 +149,7 @@ require (
 	github.com/containerd/ttrpc v1.2.5 // indirect
 	github.com/containernetworking/cni v1.2.2 // indirect
 	github.com/containernetworking/plugins v1.5.1 // indirect
-	github.com/cyphar/filepath-securejoin v0.2.4 // indirect
+	github.com/cyphar/filepath-securejoin v0.3.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dimchansky/utfbom v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
@@ -205,10 +205,10 @@ require (
 	github.com/weppos/publicsuffix-go v0.15.1-0.20210511084619-b1f36a2d6c0b // indirect
 	github.com/zmap/zcrypto v0.0.0-20210511125630-18f1e0152cfc // indirect
 	github.com/zmap/zlint/v3 v3.1.0 // indirect
-	go.etcd.io/etcd/client/pkg/v3 v3.5.6 // indirect
-	go.etcd.io/etcd/pkg/v3 v3.5.6 // indirect
-	go.etcd.io/etcd/raft/v3 v3.5.6 // indirect
-	go.etcd.io/etcd/server/v3 v3.5.6 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.5.16 // indirect
+	go.etcd.io/etcd/pkg/v3 v3.5.16 // indirect
+	go.etcd.io/etcd/raft/v3 v3.5.16 // indirect
+	go.etcd.io/etcd/server/v3 v3.5.16 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.46.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v0.44.0 // indirect
