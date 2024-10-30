@@ -7,7 +7,7 @@ import (
 	"github.com/containerd/log"
 	"github.com/docker/docker/errdefs"
 	"github.com/hashicorp/go-multierror"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
@@ -99,10 +99,8 @@ func (c *cdiHandler) injectCDIDevices(s *specs.Spec, dev *deviceInstance) error 
 
 // getErrors returns a single error representation of errors that may have occurred while refreshing the CDI registry.
 func (c *cdiHandler) getErrors() error {
-	errors := c.registry.GetErrors()
-
 	var err *multierror.Error
-	for _, errs := range errors {
+	for _, errs := range c.registry.GetErrors() {
 		err = multierror.Append(err, errs...)
 	}
 	return err.ErrorOrNil()
