@@ -34,16 +34,22 @@ keywords: "API, Docker, rcli, REST, documentation"
   and will be omitted in API v1.49.
 * `Sysctls` in `HostConfig` (top level `--sysctl` settings) for `eth0` are
   no longer migrated to `DriverOpts`, as described in the changes for v1.46.
-
-## v1.47 API changes
-
-[Docker Engine API v1.47](https://docs.docker.com/reference/api/engine/version/v1.47/) documentation
-
+* `GET /images/json` response now includes `Descriptor` field, which contains
+  an OCI descriptor of the image target.
+  The new field will only be populated if the daemon provides a multi-platform
+  image store.
+  WARNING: This is experimental and may change at any time without any backward
+  compatibility.
 * `POST /networks/create` now has an `EnableIPv4` field. Setting it to `false`
   disables IPv4 IPAM for the network. It can only be set to `false` if the
   daemon has experimental features enabled.
 * `GET /networks/{id}` now returns an `EnableIPv4` field showing whether the
   network has IPv4 IPAM enabled.
+
+## v1.47 API changes
+
+[Docker Engine API v1.47](https://docs.docker.com/reference/api/engine/version/v1.47/) documentation
+
 * `GET /images/json` response now includes `Manifests` field, which contains
   information about the sub-manifests included in the image index. This
   includes things like platform-specific manifests and build attestations.

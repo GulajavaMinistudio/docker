@@ -12,8 +12,8 @@ ARG DOCKERCLI_VERSION=v27.3.1
 # cli version used for integration-cli tests
 ARG DOCKERCLI_INTEGRATION_REPOSITORY="https://github.com/docker/cli.git"
 ARG DOCKERCLI_INTEGRATION_VERSION=v17.06.2-ce
-ARG BUILDX_VERSION=0.17.1
-ARG COMPOSE_VERSION=v2.29.7
+ARG BUILDX_VERSION=0.18.0
+ARG COMPOSE_VERSION=v2.30.3
 
 ARG SYSTEMD="false"
 ARG FIREWALLD="false"
@@ -23,7 +23,7 @@ ARG DOCKER_STATIC=1
 # https://hub.docker.com/r/distribution/distribution. This version of
 # the registry is used to test schema 2 manifests. Generally,  the version
 # specified here should match a current release.
-ARG REGISTRY_VERSION=3.0.0-beta.1
+ARG REGISTRY_VERSION=3.0.0-rc.1
 
 # delve is currently only supported on linux/amd64 and linux/arm64;
 # https://github.com/go-delve/delve/blob/v1.8.1/pkg/proc/native/support_sentinel.go#L1-L6
