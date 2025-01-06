@@ -13,7 +13,7 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/content"
-	containerdimages "github.com/containerd/containerd/images"
+	c8dimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/leases"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/rootfs"
@@ -106,10 +106,11 @@ func (i *ImageService) GetImageAndReleasableLayer(ctx context.Context, refOrID s
 		}
 	}
 
-	ctx, _, err := i.client.WithLease(ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
+	ctx, release, err := i.withLease(ctx, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create lease for commit: %w", err)
 	}
+	defer release()
 
 	// TODO(laurazard): do we really need a new method here to pull the image?
 	imgDesc, err := i.pullForBuilder(ctx, refOrID, opts.AuthConfig, opts.Output, opts.Platform)
@@ -203,12 +204,12 @@ func newROLayerForImage(ctx context.Context, imgDesc *ocispec.Descriptor, i *Ima
 		platMatcher = platforms.Only(*platform)
 	}
 
-	confDesc, err := containerdimages.Config(ctx, i.content, *imgDesc, platMatcher)
+	confDesc, err := c8dimages.Config(ctx, i.content, *imgDesc, platMatcher)
 	if err != nil {
 		return nil, err
 	}
 
-	diffIDs, err := containerdimages.RootFS(ctx, i.content, confDesc)
+	diffIDs, err := c8dimages.RootFS(ctx, i.content, confDesc)
 	if err != nil {
 		return nil, err
 	}
@@ -234,9 +235,9 @@ func newROLayerForImage(ctx context.Context, imgDesc *ocispec.Descriptor, i *Ima
 
 func createLease(ctx context.Context, lm leases.Manager) (context.Context, leases.Lease, error) {
 	lease, err := lm.Create(ctx,
-		leases.WithExpiration(time.Hour*24),
+		leases.WithExpiration(leaseExpireDuration),
 		leases.WithLabels(map[string]string{
-			"org.mobyproject.lease.classicbuilder": "true",
+			pruneLeaseLabel: "true",
 		}),
 	)
 	if err != nil {
@@ -447,7 +448,7 @@ func (i *ImageService) CreateImage(ctx context.Context, config []byte, parent st
 		if err != nil {
 			return nil, err
 		}
-		parentImageManifest, err := containerdimages.Manifest(ctx, i.content, parentDesc, platforms.Default())
+		parentImageManifest, err := c8dimages.Manifest(ctx, i.content, parentDesc, platforms.Default())
 		if err != nil {
 			return nil, err
 		}
@@ -475,7 +476,7 @@ func (i *ImageService) CreateImage(ctx context.Context, config []byte, parent st
 		}
 
 		layers = append(layers, ocispec.Descriptor{
-			MediaType: containerdimages.MediaTypeDockerSchema2LayerGzip,
+			MediaType: c8dimages.MediaTypeDockerSchema2LayerGzip,
 			Digest:    layerDigest,
 			Size:      info.Size,
 		})
@@ -493,24 +494,18 @@ func (i *ImageService) createImageOCI(ctx context.Context, imgToCreate imagespec
 	parentDigest digest.Digest, layers []ocispec.Descriptor,
 	containerConfig container.Config,
 ) (dimage.ID, error) {
-	// Necessary to prevent the contents from being GC'd
-	// between writing them here and creating an image
-	ctx, release, err := i.client.WithLease(ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
+	ctx, release, err := i.withLease(ctx, false)
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		if err := release(context.WithoutCancel(ctx)); err != nil {
-			log.G(ctx).WithError(err).Warn("failed to release lease created for create")
-		}
-	}()
+	defer release()
 
 	manifestDesc, ccDesc, err := writeContentsForImage(ctx, i.snapshotter, i.content, imgToCreate, layers, containerConfig)
 	if err != nil {
 		return "", err
 	}
 
-	img := containerdimages.Image{
+	img := c8dimages.Image{
 		Name:      danglingImageName(manifestDesc.Digest),
 		Target:    manifestDesc,
 		CreatedAt: time.Now(),
@@ -524,18 +519,11 @@ func (i *ImageService) createImageOCI(ctx context.Context, imgToCreate imagespec
 		img.Labels[imageLabelClassicBuilderFromScratch] = "1"
 	}
 
-	createdImage, err := i.images.Update(ctx, img)
-	if err != nil {
-		if !cerrdefs.IsNotFound(err) {
-			return "", err
-		}
-
-		if createdImage, err = i.images.Create(ctx, img); err != nil {
-			return "", fmt.Errorf("failed to create new image: %w", err)
-		}
+	if err := i.createOrReplaceImage(ctx, img); err != nil {
+		return "", err
 	}
 
-	id := image.ID(createdImage.Target.Digest)
+	id := image.ID(img.Target.Digest)
 	i.LogImageEvent(id.String(), id.String(), events.ActionCreate)
 
 	if err := i.unpackImage(ctx, i.StorageDriver(), img, manifestDesc); err != nil {

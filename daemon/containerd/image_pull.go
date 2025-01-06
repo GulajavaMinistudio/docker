@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/leases"
+	c8dimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/pkg/snapshotters"
 	"github.com/containerd/containerd/remotes/docker"
 	cerrdefs "github.com/containerd/errdefs"
@@ -39,6 +38,12 @@ func (i *ImageService) PullImage(ctx context.Context, baseRef reference.Named, p
 		}
 	}()
 	out := streamformatter.NewJSONProgressOutput(outStream, false)
+
+	ctx, done, err := i.withLease(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer done()
 
 	if !reference.IsNameOnly(baseRef) {
 		return i.pullTag(ctx, baseRef, platform, metaHeaders, authConfig, out)
@@ -89,14 +94,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 	var outNewImg containerd.Image
 
 	if oldImage.Target.Digest != "" {
-		// Lease the old image content to prevent it from being garbage collected until we keep it as dangling image.
-		lm := i.client.LeasesService()
-		lease, err := lm.Create(ctx, leases.WithRandomID())
-		if err != nil {
-			return errdefs.System(fmt.Errorf("failed to create lease: %w", err))
-		}
-
-		err = leaseContent(ctx, i.content, lm, lease, oldImage.Target)
+		err = i.leaseContent(ctx, i.content, oldImage.Target)
 		if err != nil {
 			return errdefs.System(fmt.Errorf("failed to lease content: %w", err))
 		}
@@ -110,9 +108,6 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 					}
 				}
 			}
-			if err := lm.Delete(ctx, lease); err != nil {
-				log.G(ctx).WithError(err).Warn("failed to delete lease")
-			}
 		}()
 	}
 
@@ -122,15 +117,19 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 	}
 
 	jobs := newJobs()
-	h := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		if images.IsLayerType(desc.MediaType) {
+	h := c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		if c8dimages.IsLayerType(desc.MediaType) {
 			jobs.Add(desc)
 		}
 		return nil, nil
 	})
 	opts = append(opts, containerd.WithImageHandler(h))
 
-	pp := pullProgress{store: i.content, showExists: true}
+	pp := &pullProgress{
+		store:       i.content,
+		snapshotter: i.snapshotterService(i.snapshotter),
+		showExists:  true,
+	}
 	finishProgress := jobs.showProgress(ctx, out, pp)
 
 	defer func() {
@@ -154,8 +153,8 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 	}()
 
 	var sentPullingFrom, sentSchema1Deprecation bool
-	ah := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		if desc.MediaType == images.MediaTypeDockerSchema1Manifest && !sentSchema1Deprecation {
+	ah := c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		if desc.MediaType == c8dimages.MediaTypeDockerSchema1Manifest && !sentSchema1Deprecation {
 			err := distribution.DeprecatedSchema1ImageError(ref)
 			if os.Getenv("DOCKER_ENABLE_DEPRECATED_PULL_SCHEMA_1_IMAGE") == "" {
 				log.G(context.TODO()).Warn(err.Error())
@@ -164,11 +163,11 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 			progress.Message(out, "", err.Error())
 			sentSchema1Deprecation = true
 		}
-		if images.IsLayerType(desc.MediaType) {
+		if c8dimages.IsLayerType(desc.MediaType) {
 			id := stringid.TruncateID(desc.Digest.String())
 			progress.Update(out, id, "Pulling fs layer")
 		}
-		if images.IsManifestType(desc.MediaType) {
+		if c8dimages.IsManifestType(desc.MediaType) {
 			if !sentPullingFrom {
 				var tagOrDigest string
 				if tagged, ok := ref.(reference.Tagged); ok {
@@ -180,7 +179,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 				sentPullingFrom = true
 			}
 
-			available, _, _, missing, err := images.Check(ctx, i.content, desc, p)
+			available, _, _, missing, err := c8dimages.Check(ctx, i.content, desc, p)
 			if err != nil {
 				return nil, err
 			}
@@ -200,6 +199,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 
 	// AppendInfoHandlerWrapper will annotate the image with basic information like manifest and layer digests as labels;
 	// this information is used to enable remote snapshotters like nydus and stargz to query a registry.
+	// This is also needed for the pull progress to detect the `Extracting` status.
 	infoHandler := snapshotters.AppendInfoHandlerWrapper(ref.String())
 	opts = append(opts, containerd.WithImageHandlerWrapper(infoHandler))
 

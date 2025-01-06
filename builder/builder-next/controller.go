@@ -148,7 +148,7 @@ func newSnapshotterController(ctx context.Context, rt http.RoundTripper, opt Opt
 	}
 	wo.Executor = exec
 
-	w, err := mobyworker.NewContainerdWorker(ctx, wo, opt.Callbacks)
+	w, err := mobyworker.NewContainerdWorker(ctx, wo, opt.Callbacks, rt)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +193,7 @@ func newSnapshotterController(ctx context.Context, rt http.RoundTripper, opt Opt
 		LeaseManager:   wo.LeaseManager,
 		ContentStore:   wo.ContentStore,
 		TraceCollector: getTraceExporter(ctx),
+		GarbageCollect: w.GarbageCollect,
 	})
 }
 
@@ -381,6 +382,7 @@ func newGraphDriverController(ctx context.Context, rt http.RoundTripper, opt Opt
 		Layers:            layers,
 		Platforms:         archutil.SupportedPlatforms(true),
 		LeaseManager:      lm,
+		GarbageCollect:    mdb.GarbageCollect,
 		Labels:            getLabels(opt, nil),
 	}
 
@@ -420,41 +422,44 @@ func newGraphDriverController(ctx context.Context, rt http.RoundTripper, opt Opt
 		HistoryDB:      historyDB,
 		HistoryConfig:  historyConf,
 		TraceCollector: getTraceExporter(ctx),
+		GarbageCollect: w.GarbageCollect,
 	})
 }
 
 func getGCPolicy(conf config.BuilderConfig, root string) ([]client.PruneInfo, error) {
 	var gcPolicy []client.PruneInfo
 	if conf.GC.Enabled {
-		var (
-			defaultKeepStorage int64
-			err                error
-		)
-
-		if conf.GC.DefaultKeepStorage != "" {
-			defaultKeepStorage, err = units.RAMInBytes(conf.GC.DefaultKeepStorage)
-			if err != nil {
-				return nil, errors.Wrapf(err, "could not parse '%s' as Builder.GC.DefaultKeepStorage config", conf.GC.DefaultKeepStorage)
-			}
-		}
-
 		if conf.GC.Policy == nil {
+			var defaultKeepStorage int64
+			if conf.GC.DefaultKeepStorage != "" {
+				b, err := units.RAMInBytes(conf.GC.DefaultKeepStorage)
+				if err != nil {
+					return nil, errors.Wrapf(err, "failed to parse defaultKeepStorage")
+				}
+				defaultKeepStorage = b
+			}
 			gcPolicy = mobyworker.DefaultGCPolicy(root, defaultKeepStorage)
 		} else {
 			gcPolicy = make([]client.PruneInfo, len(conf.GC.Policy))
 			for i, p := range conf.GC.Policy {
-				b, err := units.RAMInBytes(p.KeepStorage)
-				if err != nil {
-					return nil, err
-				}
-				if b == 0 {
-					b = defaultKeepStorage
+				var keepStorage int64
+				if p.KeepStorage != "" {
+					b, err := units.RAMInBytes(p.KeepStorage)
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to parse keepStorage")
+					}
+					// don't set a default here, zero is a valid value when
+					// specified by the user, as the gc-policy may be determined
+					// through other filters;
+					// https://github.com/moby/moby/pull/49062#issuecomment-2554981829
+					keepStorage = b
 				}
 
 				// FIXME(thaJeztah): wire up new options https://github.com/moby/moby/issues/48639
+				var err error
 				gcPolicy[i], err = toBuildkitPruneInfo(types.BuildCachePruneOptions{
 					All:         p.All,
-					KeepStorage: b,
+					KeepStorage: keepStorage,
 					Filters:     filters.Args(p.Filter),
 				})
 				if err != nil {
@@ -482,6 +487,16 @@ func getLabels(opt Opt, labels map[string]string) map[string]string {
 	if labels == nil {
 		labels = make(map[string]string)
 	}
-	labels[wlabel.HostGatewayIP] = opt.DNSConfig.HostGatewayIP.String()
+	if len(opt.DNSConfig.HostGatewayIPs) > 0 {
+		// TODO(robmry) - buildx has its own version of toBuildkitExtraHosts(), which
+		//   needs to be updated to understand >1 address. For now, take the IPv4 address
+		//   if there is one, else IPv6.
+		for _, gip := range opt.DNSConfig.HostGatewayIPs {
+			labels[wlabel.HostGatewayIP] = gip.String()
+			if gip.Is4() {
+				break
+			}
+		}
+	}
 	return labels
 }

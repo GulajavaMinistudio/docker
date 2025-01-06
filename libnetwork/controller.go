@@ -133,7 +133,7 @@ func New(cfgOptions ...config.Option) (*Controller, error) {
 		return nil, err
 	}
 
-	if err := registerNetworkDrivers(&c.drvRegistry, c.makeDriverConfig); err != nil {
+	if err := registerNetworkDrivers(&c.drvRegistry, c.store, c.makeDriverConfig); err != nil {
 		return nil, err
 	}
 
@@ -168,7 +168,7 @@ func New(cfgOptions ...config.Option) (*Controller, error) {
 		return nil, err
 	}
 
-	setupArrangeUserFilterRule(c)
+	c.setupUserChains()
 	return c, nil
 }
 
@@ -333,9 +333,7 @@ func (c *Controller) makeDriverConfig(ntype string) map[string]interface{} {
 		return nil
 	}
 
-	cfg := map[string]interface{}{
-		netlabel.LocalKVClient: c.store,
-	}
+	cfg := map[string]interface{}{}
 	for _, label := range c.cfg.Labels {
 		key, val, _ := strings.Cut(label, "=")
 		if !strings.HasPrefix(key, netlabel.DriverPrefix+"."+ntype) {
@@ -700,28 +698,7 @@ addToStore:
 		}
 	}
 
-	if c.isSwarmNode() {
-		c.mu.Lock()
-		arrangeIngressFilterRule()
-		c.mu.Unlock()
-	}
-
-	if err := c.SetupUserChains(); err != nil {
-		log.G(context.TODO()).WithError(err).Warnf("Controller.NewNetwork %s:", name)
-	}
-
 	return nw, nil
-}
-
-// Sets up the DOCKER-USER chain for each iptables version (IPv4, IPv6) that's
-// enabled in the controller's configuration.
-func (c *Controller) SetupUserChains() error {
-	for _, ipVersion := range c.enabledIptablesVersions() {
-		if err := setupUserChain(ipVersion); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 var joinCluster NetworkWalker = func(nw *Network) bool {
@@ -1105,7 +1082,6 @@ func (c *Controller) getIPAMDriver(name string) (ipamapi.Ipam, *ipamapi.Capabili
 func (c *Controller) Stop() {
 	c.store.Close()
 	c.stopExternalKeyListener()
-	osl.GC()
 }
 
 // StartDiagnostic starts the network diagnostic server listening on port.

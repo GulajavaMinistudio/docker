@@ -12,16 +12,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// IPV defines the table string
-type IPV string
-
-const (
-	// Iptables point ipv4 table
-	Iptables IPV = "ipv4"
-	// IP6Tables point to ipv6 table
-	IP6Tables IPV = "ipv6"
-)
-
 const (
 	dbusInterface   = "org.fedoraproject.FirewallD1"
 	dbusPath        = "/org/fedoraproject/FirewallD1"
@@ -168,8 +158,8 @@ func checkRunning() bool {
 	return err == nil
 }
 
-// Passthrough method simply passes args through to iptables/ip6tables
-func Passthrough(ipv IPV, args ...string) ([]byte, error) {
+// passthrough method simply passes args through to iptables/ip6tables
+func passthrough(ipv IPVersion, args ...string) ([]byte, error) {
 	var output string
 	log.G(context.TODO()).Debugf("Firewalld passthrough: %s, %s", ipv, args)
 	if err := connection.sysObj.Call(dbusInterface+".direct.passthrough", 0, ipv, args).Store(&output); err != nil {

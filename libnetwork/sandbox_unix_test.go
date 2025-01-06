@@ -10,11 +10,11 @@ import (
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/internal/testutils/netnsutils"
 	"github.com/docker/docker/libnetwork/config"
+	"github.com/docker/docker/libnetwork/drivers/bridge"
 	"github.com/docker/docker/libnetwork/ipams/defaultipam"
 	"github.com/docker/docker/libnetwork/ipamutils"
 	"github.com/docker/docker/libnetwork/netlabel"
 	"github.com/docker/docker/libnetwork/options"
-	"github.com/docker/docker/libnetwork/osl"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -42,7 +42,9 @@ func getTestEnv(t *testing.T, opts ...[]NetworkOption) (*Controller, []*Network)
 		name := "test_nw_" + strconv.Itoa(i)
 		newOptions := []NetworkOption{
 			NetworkOptionGeneric(options.Generic{
-				netlabel.GenericData: options.Generic{"BridgeName": name},
+				netlabel.GenericData: map[string]string{
+					bridge.BridgeName: name,
+				},
 			}),
 		}
 		newOptions = append(newOptions, opt...)
@@ -108,8 +110,6 @@ func TestSandboxAddEmpty(t *testing.T) {
 	if len(ctrlr.sandboxes) != 0 {
 		t.Fatalf("controller sandboxes is not empty. len = %d", len(ctrlr.sandboxes))
 	}
-
-	osl.GC()
 }
 
 // // If different priorities are specified, internal option and ipv6 addresses mustn't influence endpoint order
@@ -202,8 +202,6 @@ func TestSandboxAddMultiPrio(t *testing.T) {
 	if len(ctrlr.sandboxes) != 0 {
 		t.Fatalf("controller sandboxes is not empty. len = %d", len(ctrlr.sandboxes))
 	}
-
-	osl.GC()
 }
 
 func TestSandboxAddSamePrio(t *testing.T) {
@@ -305,6 +303,4 @@ func TestSandboxAddSamePrio(t *testing.T) {
 	if len(ctrlr.sandboxes) != 0 {
 		t.Fatalf("controller containers is not empty. len = %d", len(ctrlr.sandboxes))
 	}
-
-	osl.GC()
 }

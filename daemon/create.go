@@ -3,7 +3,6 @@ package daemon // import "github.com/docker/docker/daemon"
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"strings"
 	"time"
 
@@ -23,7 +22,7 @@ import (
 	"github.com/docker/docker/runconfig"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/selinux/go-selinux"
-	archvariant "github.com/tonistiigi/go-archvariant"
+	"github.com/tonistiigi/go-archvariant"
 )
 
 type createOpts struct {
@@ -60,10 +59,6 @@ func (daemon *Daemon) containerCreate(ctx context.Context, daemonCfg *configStor
 	start := time.Now()
 	if opts.params.Config == nil {
 		return containertypes.CreateResponse{}, errdefs.InvalidParameter(runconfig.ErrEmptyConfig)
-	}
-	// TODO(thaJeztah): remove logentries check and migration code in release v26.0.0.
-	if opts.params.HostConfig != nil && opts.params.HostConfig.LogConfig.Type == "logentries" {
-		return containertypes.CreateResponse{}, errdefs.InvalidParameter(fmt.Errorf("the logentries logging driver has been deprecated and removed"))
 	}
 
 	// Normalize some defaults. Doing this "ad-hoc" here for now, as there's
@@ -134,7 +129,7 @@ func (daemon *Daemon) create(ctx context.Context, daemonCfg *config.Config, opts
 		imgManifest *ocispec.Descriptor
 		imgID       image.ID
 		err         error
-		os          = runtime.GOOS
+		platform    = platforms.DefaultSpec()
 	)
 
 	if opts.params.Config.Image != "" {
@@ -142,27 +137,20 @@ func (daemon *Daemon) create(ctx context.Context, daemonCfg *config.Config, opts
 		if err != nil {
 			return nil, err
 		}
-		// when using the containerd store, we need to get the actual
-		// image manifest so we can store it and later deterministically
-		// resolve the specific image the container is running
-		if daemon.UsesSnapshotter() {
-			imgManifest, err = daemon.imageService.GetImageManifest(ctx, opts.params.Config.Image, backend.GetImageOpts{Platform: opts.params.Platform})
-			if err != nil {
-				log.G(ctx).WithError(err).Error("failed to find image manifest")
-				return nil, err
-			}
+		if img.Details != nil {
+			imgManifest = img.Details.ManifestDescriptor
 		}
-		os = img.OperatingSystem()
+		platform = img.Platform()
 		imgID = img.ID()
 	} else if isWindows {
-		os = "linux" // 'scratch' case.
+		platform.OS = "linux" // 'scratch' case.
 	}
 
 	// On WCOW, if are not being invoked by the builder to create this container (where
 	// ignoreImagesArgEscaped will be true) - if the image already has its arguments escaped,
 	// ensure that this is replicated across to the created container to avoid double-escaping
 	// of the arguments/command line when the runtime attempts to run the container.
-	if os == "windows" && !opts.ignoreImagesArgsEscaped && img != nil && img.RunConfig().ArgsEscaped {
+	if platform.OS == "windows" && !opts.ignoreImagesArgsEscaped && img != nil && img.RunConfig().ArgsEscaped {
 		opts.params.Config.ArgsEscaped = true
 	}
 
@@ -174,7 +162,7 @@ func (daemon *Daemon) create(ctx context.Context, daemonCfg *config.Config, opts
 		return nil, errdefs.InvalidParameter(err)
 	}
 
-	if ctr, err = daemon.newContainer(opts.params.Name, os, opts.params.Config, opts.params.HostConfig, imgID, opts.managed); err != nil {
+	if ctr, err = daemon.newContainer(opts.params.Name, platform, opts.params.Config, opts.params.HostConfig, imgID, opts.managed); err != nil {
 		return nil, err
 	}
 	defer func() {

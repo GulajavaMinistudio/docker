@@ -17,6 +17,15 @@ keywords: "API, Docker, rcli, REST, documentation"
 
 [Docker Engine API v1.48](https://docs.docker.com/reference/api/engine/version/v1.48/) documentation
 
+* Deprecated: The "allow-nondistributable-artifacts" daemon configuration is
+  deprecated and enabled by default. The  `AllowNondistributableArtifactsCIDRs`
+  and `AllowNondistributableArtifactsHostnames` fields in the `RegistryConfig`
+  struct in the `GET /info` response will now always be `null` and will be
+  omitted in API v1.49.
+* Deprecated: The `BridgeNfIptables` and `BridgeNfIp6tables` fields in the 
+  `GET /info` response are now always be `false` and will be omitted in API
+  v1.49. The netfilter module is now loaded on-demand, and no longer during
+  daemon startup, making these fields obsolete.
 * `GET /images/{name}/history` now supports a `platform` parameter (JSON
   encoded OCI Platform type) that allows to specify a platform to show the
   history of.
@@ -34,17 +43,34 @@ keywords: "API, Docker, rcli, REST, documentation"
   and will be omitted in API v1.49.
 * `Sysctls` in `HostConfig` (top level `--sysctl` settings) for `eth0` are
   no longer migrated to `DriverOpts`, as described in the changes for v1.46.
-* `GET /images/json` response now includes `Descriptor` field, which contains
-  an OCI descriptor of the image target.
+* `GET /images/json` and `GET /images/{name}/json` responses now include
+  `Descriptor` field, which contains an OCI descriptor of the image target.
   The new field will only be populated if the daemon provides a multi-platform
   image store.
   WARNING: This is experimental and may change at any time without any backward
   compatibility.
+* `GET /containers/{name}/json` now returns an `ImageManifestDescriptor` field
+  containing the OCI descriptor of the platform-specific image manifest of the
+  image that was used to create the container.
+  This field is only populated if the daemon provides a multi-platform image
+  store.
 * `POST /networks/create` now has an `EnableIPv4` field. Setting it to `false`
   disables IPv4 IPAM for the network. It can only be set to `false` if the
   daemon has experimental features enabled.
 * `GET /networks/{id}` now returns an `EnableIPv4` field showing whether the
   network has IPv4 IPAM enabled.
+* `POST /networks/{id}/connect` and `POST /containers/create` now accept a
+  `GwPriority` field in `EndpointsConfig`. This value is used to determine which
+  network endpoint provides the default gateway for the container. The endpoint
+  with the highest priority is selected. If multiple endpoints have the same
+  priority, endpoints are sorted lexicographically by their network name, and
+  the one that sorts first is picked.
+* `GET /containers/json` now returns a `GwPriority` field in `NetworkSettings`
+  for each network endpoint.
+* API debug endpoints (`GET /debug/vars`, `GET /debug/pprof/`, `GET /debug/pprof/cmdline`,
+  `GET /debug/pprof/profile`, `GET /debug/pprof/symbol`, `GET /debug/pprof/trace`,
+  `GET /debug/pprof/{name}`) are now also accessible through the versioned-API
+  paths (`/v<API-version>/<endpoint>`).
 
 ## v1.47 API changes
 
@@ -57,6 +83,11 @@ keywords: "API, Docker, rcli, REST, documentation"
   query parameter to `true`.
   WARNING: This is experimental and may change at any time without any backward
   compatibility.
+* `GET /info` no longer includes warnings when `bridge-nf-call-iptables` or
+  `bridge-nf-call-ip6tables` are disabled when the daemon was started. The
+  `br_netfilter` module is now attempted to be loaded when needed, making those
+  warnings inaccurate. This change is not versioned, and affects all API versions
+  if the daemon has this patch.
 
 ## v1.46 API changes
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,16 +19,16 @@ import (
 	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/cmd/dockerd/debug"
 	"github.com/docker/docker/daemon/config"
+	"github.com/docker/docker/daemon/internal/filedescriptors"
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/internal/platform"
-	"github.com/docker/docker/pkg/fileutils"
 	"github.com/docker/docker/pkg/meminfo"
 	"github.com/docker/docker/pkg/parsers/kernel"
 	"github.com/docker/docker/pkg/parsers/operatingsystem"
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/registry"
-	metrics "github.com/docker/go-metrics"
+	"github.com/docker/go-metrics"
 	"github.com/opencontainers/selinux/go-selinux"
 )
 
@@ -53,8 +54,6 @@ func (daemon *Daemon) SystemInfo(ctx context.Context) (*system.Info, error) {
 		ID:                 daemon.id,
 		Images:             daemon.imageService.CountImages(ctx),
 		IPv4Forwarding:     !sysInfo.IPv4ForwardingDisabled,
-		BridgeNfIptables:   !sysInfo.BridgeNFCallIPTablesDisabled,
-		BridgeNfIP6tables:  !sysInfo.BridgeNFCallIP6TablesDisabled,
 		Name:               hostName(ctx),
 		SystemTime:         time.Now().Format(time.RFC3339Nano),
 		LoggingDriver:      daemon.defaultLogConfig.Type,
@@ -107,7 +106,7 @@ func (daemon *Daemon) SystemInfo(ctx context.Context) (*system.Info, error) {
 func (daemon *Daemon) SystemVersion(ctx context.Context) (types.Version, error) {
 	defer metrics.StartTimer(hostInfoFunctions.WithValues("system_version"))()
 
-	kernelVersion := kernelVersion(ctx)
+	kernelVer := kernelVersion(ctx)
 	cfg := daemon.config()
 
 	v := types.Version{
@@ -123,8 +122,8 @@ func (daemon *Daemon) SystemVersion(ctx context.Context) (types.Version, error) 
 					"Os":            runtime.GOOS,
 					"Arch":          runtime.GOARCH,
 					"BuildTime":     dockerversion.BuildTime,
-					"KernelVersion": kernelVersion,
-					"Experimental":  fmt.Sprintf("%t", cfg.Experimental),
+					"KernelVersion": kernelVer,
+					"Experimental":  strconv.FormatBool(cfg.Experimental),
 				},
 			},
 		},
@@ -138,7 +137,7 @@ func (daemon *Daemon) SystemVersion(ctx context.Context) (types.Version, error) 
 		Os:            runtime.GOOS,
 		Arch:          runtime.GOARCH,
 		BuildTime:     dockerversion.BuildTime,
-		KernelVersion: kernelVersion,
+		KernelVersion: kernelVer,
 		Experimental:  cfg.Experimental,
 	}
 
@@ -226,7 +225,7 @@ func (daemon *Daemon) fillContainerStates(v *system.Info) {
 // https://github.com/docker/cli/blob/v20.10.12/cli/command/system/info.go#L239-L244
 func (daemon *Daemon) fillDebugInfo(ctx context.Context, v *system.Info) {
 	v.Debug = debug.IsEnabled()
-	v.NFd = fileutils.GetTotalUsedFds(ctx)
+	v.NFd = filedescriptors.GetTotalUsedFds(ctx)
 	v.NGoroutines = runtime.NumGoroutine()
 	v.NEventsListener = daemon.EventsService.SubscribersCount()
 }
@@ -288,38 +287,37 @@ func (daemon *Daemon) fillDefaultAddressPools(ctx context.Context, v *system.Inf
 func hostName(ctx context.Context) string {
 	ctx, span := tracing.StartSpan(ctx, "hostName")
 	defer span.End()
-	hostname := ""
-	if hn, err := os.Hostname(); err != nil {
-		log.G(ctx).Warnf("Could not get hostname: %v", err)
-	} else {
-		hostname = hn
+	hn, err := os.Hostname()
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Could not get hostname")
+		return ""
 	}
-	return hostname
+	return hn
 }
 
 func kernelVersion(ctx context.Context) string {
 	ctx, span := tracing.StartSpan(ctx, "kernelVersion")
 	defer span.End()
 
-	var kernelVersion string
+	var ver string
 	if kv, err := kernel.GetKernelVersion(); err != nil {
-		log.G(ctx).Warnf("Could not get kernel version: %v", err)
+		log.G(ctx).WithError(err).Warn("Could not get kernel version")
 	} else {
-		kernelVersion = kv.String()
+		ver = kv.String()
 	}
-	return kernelVersion
+	return ver
 }
 
 func memInfo(ctx context.Context) *meminfo.Memory {
 	ctx, span := tracing.StartSpan(ctx, "memInfo")
 	defer span.End()
 
-	memInfo, err := meminfo.Read()
+	mi, err := meminfo.Read()
 	if err != nil {
-		log.G(ctx).Errorf("Could not read system memory info: %v", err)
-		memInfo = &meminfo.Memory{}
+		log.G(ctx).WithError(err).Error("Could not read system memory info")
+		return &meminfo.Memory{}
 	}
-	return memInfo
+	return mi
 }
 
 func operatingSystem(ctx context.Context) (operatingSystem string) {
@@ -329,12 +327,12 @@ func operatingSystem(ctx context.Context) (operatingSystem string) {
 	defer metrics.StartTimer(hostInfoFunctions.WithValues("operating_system"))()
 
 	if s, err := operatingsystem.GetOperatingSystem(); err != nil {
-		log.G(ctx).Warnf("Could not get operating system name: %v", err)
+		log.G(ctx).WithError(err).Warn("Could not get operating system name")
 	} else {
 		operatingSystem = s
 	}
 	if inContainer, err := operatingsystem.IsContainerized(); err != nil {
-		log.G(ctx).Errorf("Could not determine if daemon is containerized: %v", err)
+		log.G(ctx).WithError(err).Error("Could not determine if daemon is containerized")
 		operatingSystem += " (error determining if containerized)"
 	} else if inContainer {
 		operatingSystem += " (containerized)"
@@ -351,7 +349,8 @@ func osVersion(ctx context.Context) (version string) {
 
 	version, err := operatingsystem.GetOperatingSystemVersion()
 	if err != nil {
-		log.G(ctx).Warnf("Could not get operating system version: %v", err)
+		log.G(ctx).WithError(err).Warn("Could not get operating system version")
+		return ""
 	}
 
 	return version

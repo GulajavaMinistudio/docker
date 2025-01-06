@@ -6,10 +6,10 @@ dockerd - Enable daemon mode
 # SYNOPSIS
 **dockerd**
 [**--add-runtime**[=*[]*]]
-[**--allow-nondistributable-artifacts**[=*[]*]]
 [**--authorization-plugin**[=*[]*]]
 [**-b**|**--bridge**[=*BRIDGE*]]
 [**--bip**[=*BIP*]]
+[**--bip6**[=*BIP*]]
 [**--cgroup-parent**[=*[]*]]
 [**--config-file**[=*path*]]
 [**--containerd**[=*SOCKET-PATH*]]
@@ -34,8 +34,9 @@ dockerd - Enable daemon mode
 [**--fixed-cidr**[=*FIXED-CIDR*]]
 [**--fixed-cidr-v6**[=*FIXED-CIDR-V6*]]
 [**-G**|**--group**[=*docker*]]
-[**-H**|**--host**[=*[]*]]
 [**--help**]
+[**-H**|**--host**[=*[]*]]
+[**--host-gateway-ip**[=*HOST-GATEWAY-IP*]]
 [**--http-proxy**[*""*]]
 [**--https-proxy**[*""*]]
 [**--icc**[=**true**]]
@@ -124,20 +125,6 @@ $ sudo dockerd --add-runtime runc=runc --add-runtime custom=/usr/local/bin/my-ru
 
   **Note**: defining runtime arguments via the command line is not supported.
 
-**--allow-nondistributable-artifacts**=[]
-  Push nondistributable artifacts to the specified registries.
-
-  List can contain elements with CIDR notation to specify a whole subnet.
-
-  This option is useful when pushing images containing nondistributable
-  artifacts to a registry on an air-gapped network so hosts on that network can
-  pull the images without connecting to another server.
-
-  **Warning**: Nondistributable artifacts typically have restrictions on how
-  and where they can be distributed and shared. Only use this feature to push
-  artifacts to private registries and ensure that you are in compliance with
-  any terms that cover redistributing nondistributable artifacts.
-
 **--authorization-plugin**=""
   Set authorization plugins to load
 
@@ -146,7 +133,11 @@ $ sudo dockerd --add-runtime runc=runc --add-runtime custom=/usr/local/bin/my-ru
   container networking
 
 **--bip**=""
-  Use the provided CIDR notation address for the dynamically created bridge
+  Use the provided CIDR notation IPv4 address for the dynamically created bridge
+  (docker0); Mutually exclusive of \-b
+
+**--bip6**=""
+  Use the provided CIDR notation IPv6 address for the dynamically created bridge
   (docker0); Mutually exclusive of \-b
 
 **--cgroup-parent**=""
@@ -239,13 +230,18 @@ $ sudo dockerd --add-runtime runc=runc --add-runtime custom=/usr/local/bin/my-ru
   Group to assign the unix socket specified by -H when running in daemon mode.
   use '' (the empty string) to disable setting of a group. Default is `docker`.
 
+**--help**
+  Print usage statement
+
 **-H**, **--host**=[*unix:///var/run/docker.sock*]: tcp://[host:port] to bind or
 unix://[/path/to/socket] to use.
   The socket(s) to bind to in daemon mode specified using one or more
   tcp://host:port, unix:///path/to/socket, fd://\* or fd://socketfd.
 
-**--help**
-  Print usage statement
+**--host-gateway-ip**=[*2001:db8::1234*]
+  Supply host addresses to substitute for the special string host-gateway in
+  --add-host options. Addresses from the docker0 bridge are used by default.
+  Two of these options are allowed, one IPv4 and one IPv6 address.
 
 **--http-proxy***""*
   Proxy URL for HTTP requests unless overridden by NoProxy.

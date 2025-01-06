@@ -8,7 +8,7 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/content"
-	containerdimages "github.com/containerd/containerd/images"
+	c8dimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/images/archive"
 	"github.com/containerd/containerd/leases"
 	cerrdefs "github.com/containerd/errdefs"
@@ -68,22 +68,17 @@ func (i *ImageService) ExportImage(ctx context.Context, names []string, platform
 		archive.WithSkipMissing(i.content),
 	}
 
-	leasesManager := i.client.LeasesService()
-	lease, err := leasesManager.Create(ctx, leases.WithRandomID())
+	ctx, done, err := i.withLease(ctx, false)
 	if err != nil {
 		return errdefs.System(err)
 	}
-	defer func() {
-		if err := leasesManager.Delete(ctx, lease); err != nil {
-			log.G(ctx).WithError(err).Warn("cleaning up lease")
-		}
-	}()
+	defer done()
 
 	addLease := func(ctx context.Context, target ocispec.Descriptor) error {
-		return leaseContent(ctx, i.content, leasesManager, lease, target)
+		return i.leaseContent(ctx, i.content, target)
 	}
 
-	exportImage := func(ctx context.Context, img containerdimages.Image, ref reference.Named) error {
+	exportImage := func(ctx context.Context, img c8dimages.Image, ref reference.Named) error {
 		target := img.Target
 
 		if platform != nil {
@@ -111,7 +106,7 @@ func (i *ImageService) ExportImage(ctx context.Context, names []string, platform
 
 			for k, v := range orgTarget.Annotations {
 				switch k {
-				case containerdimages.AnnotationImageName, ocispec.AnnotationRefName:
+				case c8dimages.AnnotationImageName, ocispec.AnnotationRefName:
 					// Strip image name/tag annotations from the descriptor.
 					// Otherwise containerd will use it as name.
 				default:
@@ -219,8 +214,14 @@ func (i *ImageService) ExportImage(ctx context.Context, names []string, platform
 
 // leaseContent will add a resource to the lease for each child of the descriptor making sure that it and
 // its children won't be deleted while the lease exists
-func leaseContent(ctx context.Context, store content.Store, leasesManager leases.Manager, lease leases.Lease, desc ocispec.Descriptor) error {
-	return containerdimages.Walk(ctx, containerdimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+func (i *ImageService) leaseContent(ctx context.Context, store content.Store, desc ocispec.Descriptor) error {
+	lid, ok := leases.FromContext(ctx)
+	if !ok {
+		return nil
+	}
+	lease := leases.Lease{ID: lid}
+	leasesManager := i.client.LeasesService()
+	return c8dimages.Walk(ctx, c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
 		_, err := store.Info(ctx, desc.Digest)
 		if err != nil {
 			if errors.Is(err, cerrdefs.ErrNotFound) {
@@ -237,7 +238,7 @@ func leaseContent(ctx context.Context, store content.Store, leasesManager leases
 			return nil, errdefs.System(err)
 		}
 
-		return containerdimages.Children(ctx, store, desc)
+		return c8dimages.Children(ctx, store, desc)
 	}), desc)
 }
 
@@ -285,7 +286,7 @@ func (i *ImageService) LoadImage(ctx context.Context, inTar io.ReadCloser, platf
 			// Even in case of a single-platform image, the manifest descriptor
 			// doesn't have a platform set, so it won't be filtered out by the
 			// FilterPlatform containerd handler.
-			if errors.Is(err, containerdimages.ErrEmptyWalk) {
+			if errors.Is(err, c8dimages.ErrEmptyWalk) {
 				return errdefs.NotFound(errors.Wrapf(err, "requested platform (%s) not found", p))
 			}
 			if cerrdefs.IsNotFound(err) {
@@ -380,7 +381,7 @@ func (i *ImageService) LoadImage(ctx context.Context, inTar io.ReadCloser, platf
 
 // verifyImagesProvidePlatform checks if the requested platform is loaded.
 // If the requested platform is not loaded, it returns an error.
-func (i *ImageService) verifyImagesProvidePlatform(ctx context.Context, imgs []containerdimages.Image, platform ocispec.Platform, pm platforms.Matcher) error {
+func (i *ImageService) verifyImagesProvidePlatform(ctx context.Context, imgs []c8dimages.Image, platform ocispec.Platform, pm platforms.Matcher) error {
 	if len(imgs) == 0 {
 		return errdefs.NotFound(fmt.Errorf("no images providing the requested platform %s found", platforms.FormatAll(platform)))
 	}

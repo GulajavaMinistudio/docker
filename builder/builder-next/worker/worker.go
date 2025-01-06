@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/gc"
+	c8dimages "github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/rootfs"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
@@ -77,6 +78,7 @@ type Opt struct {
 	ContentStore      *containerdsnapshot.Store
 	CacheManager      cache.Manager
 	LeaseManager      *leaseutil.Manager
+	GarbageCollect    func(context.Context) (gc.Stats, error)
 	ImageSource       *imageadapter.Source
 	DownloadManager   *xfer.LayerDownloadManager
 	V2MetadataService distmetadata.V2MetadataService
@@ -182,6 +184,14 @@ func (w *Worker) BuildkitVersion() client.BuildkitVersion {
 		Version:  version.Version + "-moby",
 		Revision: version.Revision,
 	}
+}
+
+func (w *Worker) GarbageCollect(ctx context.Context) error {
+	if w.Opt.GarbageCollect == nil {
+		return nil
+	}
+	_, err := w.Opt.GarbageCollect(ctx)
+	return err
 }
 
 // Close closes the worker and releases all resources
@@ -341,7 +351,7 @@ func (w *Worker) GetRemotes(ctx context.Context, ref cache.ImmutableRef, createI
 	descriptors := make([]ocispec.Descriptor, len(diffIDs))
 	for i, dgst := range diffIDs {
 		descriptors[i] = ocispec.Descriptor{
-			MediaType: images.MediaTypeDockerSchema2Layer,
+			MediaType: c8dimages.MediaTypeDockerSchema2Layer,
 			Digest:    digest.Digest(dgst),
 			Size:      -1,
 		}

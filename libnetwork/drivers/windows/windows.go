@@ -128,20 +128,26 @@ func IsBuiltinLocalDriver(networkType string) bool {
 	return ok
 }
 
-// New constructs a new bridge driver
-func newDriver(networkType string) *driver {
-	return &driver{name: networkType, networks: map[string]*hnsNetwork{}}
+func newDriver(networkType string, store *datastore.Store) (*driver, error) {
+	d := &driver{
+		name:     networkType,
+		store:    store,
+		networks: map[string]*hnsNetwork{},
+	}
+	err := d.initStore()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize %q driver: %w", networkType, err)
+	}
+	return d, nil
 }
 
-// GetInit returns an initializer for the given network type
-func RegisterBuiltinLocalDrivers(r driverapi.Registerer, driverConfig func(string) map[string]interface{}) error {
+// RegisterBuiltinLocalDrivers registers the builtin local drivers.
+func RegisterBuiltinLocalDrivers(r driverapi.Registerer, store *datastore.Store) error {
 	for networkType := range builtinLocalDrivers {
-		d := newDriver(networkType)
-		err := d.initStore(driverConfig(networkType))
+		d, err := newDriver(networkType, store)
 		if err != nil {
-			return fmt.Errorf("failed to initialize %q driver: %w", networkType, err)
+			return err
 		}
-
 		err = r.RegisterDriver(networkType, d, driverapi.Capability{
 			DataScope:         scope.Local,
 			ConnectivityScope: scope.Local,
@@ -430,7 +436,7 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 func (d *driver) DeleteNetwork(nid string) error {
 	n, err := d.getNetwork(nid)
 	if err != nil {
-		return types.InternalMaskableErrorf("%s", err)
+		return types.InternalMaskableErrorf("%v", err)
 	}
 
 	n.Lock()
@@ -439,8 +445,8 @@ func (d *driver) DeleteNetwork(nid string) error {
 
 	if n.created {
 		_, err = hcsshim.HNSNetworkRequest("DELETE", config.HnsID, "")
-		if err != nil && err.Error() != errNotFound {
-			return types.ForbiddenErrorf(err.Error())
+		if err != nil && !strings.EqualFold(err.Error(), errNotFound) {
+			return types.ForbiddenErrorf("%v", err)
 		}
 	}
 
@@ -771,7 +777,7 @@ func (d *driver) CreateEndpoint(ctx context.Context, nid, eid string, ifInfo dri
 func (d *driver) DeleteEndpoint(nid, eid string) error {
 	n, err := d.getNetwork(nid)
 	if err != nil {
-		return types.InternalMaskableErrorf("%s", err)
+		return types.InternalMaskableErrorf("%v", err)
 	}
 
 	ep, err := n.getEndpoint(eid)
@@ -788,7 +794,7 @@ func (d *driver) DeleteEndpoint(nid, eid string) error {
 	n.Unlock()
 
 	_, err = hcsshim.HNSEndpointRequest("DELETE", ep.profileID, "")
-	if err != nil && err.Error() != errNotFound {
+	if err != nil && !strings.EqualFold(err.Error(), errNotFound) {
 		return err
 	}
 
@@ -881,7 +887,7 @@ func (d *driver) Join(ctx context.Context, nid, eid string, sboxKey string, jinf
 func (d *driver) Leave(nid, eid string) error {
 	network, err := d.getNetwork(nid)
 	if err != nil {
-		return types.InternalMaskableErrorf("%s", err)
+		return types.InternalMaskableErrorf("%v", err)
 	}
 
 	// Ensure that the endpoint exists

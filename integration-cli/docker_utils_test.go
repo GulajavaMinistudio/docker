@@ -177,7 +177,7 @@ func buildImage(name string, cmdOperators ...cli.CmdOperator) *icmd.Result {
 func writeFile(dst, content string, c *testing.T) {
 	c.Helper()
 	// Create subdirectories if necessary
-	assert.Assert(c, os.MkdirAll(path.Dir(dst), 0o700) == nil)
+	assert.NilError(c, os.MkdirAll(path.Dir(dst), 0o700))
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
 	assert.NilError(c, err)
 	defer f.Close()
@@ -347,9 +347,9 @@ func getGoroutineNumber(ctx context.Context, apiClient client.APIClient) (int, e
 	return info.NGoroutines, nil
 }
 
-func waitForStableGourtineCount(ctx context.Context, t poll.TestingT, apiClient client.APIClient) int {
+func waitForStableGoroutineCount(ctx context.Context, t poll.TestingT, apiClient client.APIClient) int {
 	var out int
-	poll.WaitOn(t, stableGoroutineCount(ctx, apiClient, &out), poll.WithTimeout(30*time.Second))
+	poll.WaitOn(t, stableGoroutineCount(ctx, apiClient, &out), poll.WithDelay(time.Second), poll.WithTimeout(30*time.Second))
 	return out
 }
 
@@ -374,7 +374,7 @@ func stableGoroutineCount(ctx context.Context, apiClient client.APIClient, count
 			nRoutines = n
 		}
 
-		if numStable > 3 {
+		if numStable > 6 {
 			*count = n
 			return poll.Success()
 		}
@@ -408,7 +408,7 @@ func waitForGoroutines(ctx context.Context, t poll.TestingT, apiClient client.AP
 func getErrorMessage(c *testing.T, body []byte) string {
 	c.Helper()
 	var resp types.ErrorResponse
-	assert.Assert(c, json.Unmarshal(body, &resp) == nil)
+	assert.NilError(c, json.Unmarshal(body, &resp))
 	return strings.TrimSpace(resp.Message)
 }
 

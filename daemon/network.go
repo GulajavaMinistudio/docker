@@ -44,12 +44,6 @@ func (pnr PredefinedNetworkError) Error() string {
 // Forbidden denotes the type of this error
 func (pnr PredefinedNetworkError) Forbidden() {}
 
-// NetworkControllerEnabled checks if the networking stack is enabled.
-// This feature depends on OS primitives and it's disabled in systems like Windows.
-func (daemon *Daemon) NetworkControllerEnabled() bool {
-	return daemon.netController != nil
-}
-
 // NetworkController returns the network controller created by the daemon.
 func (daemon *Daemon) NetworkController() *libnetwork.Controller {
 	return daemon.netController
@@ -506,7 +500,7 @@ func (daemon *Daemon) DisconnectContainerFromNetwork(containerName string, netwo
 // GetNetworkDriverList returns the list of plugins drivers
 // registered for network.
 func (daemon *Daemon) GetNetworkDriverList(ctx context.Context) []string {
-	if !daemon.NetworkControllerEnabled() {
+	if daemon.netController == nil {
 		return nil
 	}
 
@@ -1115,18 +1109,24 @@ func buildEndpointInfo(networkSettings *network.Settings, n *libnetwork.Network,
 
 // buildJoinOptions builds endpoint Join options from a given network.
 func buildJoinOptions(settings *network.Settings, n interface{ Name() string }) ([]libnetwork.EndpointOption, error) {
-	var joinOptions []libnetwork.EndpointOption
-	if epConfig, ok := settings.Networks[n.Name()]; ok {
-		for _, str := range epConfig.Links {
-			name, alias, err := opts.ParseLink(str)
-			if err != nil {
-				return nil, err
-			}
-			joinOptions = append(joinOptions, libnetwork.CreateOptionAlias(name, alias))
+	epConfig, ok := settings.Networks[n.Name()]
+	if !ok {
+		return []libnetwork.EndpointOption{}, nil
+	}
+
+	joinOptions := []libnetwork.EndpointOption{
+		libnetwork.JoinOptionPriority(epConfig.GwPriority),
+	}
+
+	for _, str := range epConfig.Links {
+		name, alias, err := opts.ParseLink(str)
+		if err != nil {
+			return nil, err
 		}
-		for k, v := range epConfig.DriverOpts {
-			joinOptions = append(joinOptions, libnetwork.EndpointOptionGeneric(options.Generic{k: v}))
-		}
+		joinOptions = append(joinOptions, libnetwork.CreateOptionAlias(name, alias))
+	}
+	for k, v := range epConfig.DriverOpts {
+		joinOptions = append(joinOptions, libnetwork.EndpointOptionGeneric(options.Generic{k: v}))
 	}
 
 	return joinOptions, nil
