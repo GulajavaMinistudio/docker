@@ -10,8 +10,8 @@ import (
 	"time"
 
 	contentapi "github.com/containerd/containerd/api/services/content/v1"
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/services/content/contentserver"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/plugins/services/content/contentserver"
 	"github.com/distribution/reference"
 	"github.com/hashicorp/go-multierror"
 	"github.com/mitchellh/hashstructure/v2"
@@ -623,14 +623,12 @@ func (c *Controller) gc() {
 	}()
 
 	for _, w := range workers {
-		func(w worker.Worker) {
-			eg.Go(func() error {
-				if policy := w.GCPolicy(); len(policy) > 0 {
-					return w.Prune(ctx, ch, policy...)
-				}
-				return nil
-			})
-		}(w)
+		eg.Go(func() error {
+			if policy := w.GCPolicy(); len(policy) > 0 {
+				return w.Prune(ctx, ch, policy...)
+			}
+			return nil
+		})
 	}
 
 	err = eg.Wait()

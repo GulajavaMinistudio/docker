@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/containerd/containerd/pkg/seccomp"
+	"github.com/containerd/containerd/v2/pkg/seccomp"
 )
 
 func TestReadProcBool(t *testing.T) {
@@ -63,12 +63,6 @@ func TestNew(t *testing.T) {
 	}
 	if expected := cgroupnsSupported(); sysInfo.CgroupNamespaces != expected {
 		t.Errorf("got CgroupNamespaces %v, wanted %v", sysInfo.AppArmor, expected)
-	}
-}
-
-func TestNumCPU(t *testing.T) {
-	if cpuNumbers := NumCPU(); cpuNumbers <= 0 {
-		t.Fatal("CPU returned must be greater than zero")
 	}
 }
 

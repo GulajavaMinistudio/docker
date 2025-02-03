@@ -1,7 +1,9 @@
 package osl
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/containerd/log"
 	"github.com/docker/docker/internal/nlwrap"
+	"github.com/docker/docker/libnetwork/internal/l2disco"
 	"github.com/docker/docker/libnetwork/ns"
 	"github.com/docker/docker/libnetwork/types"
 	"github.com/vishvananda/netlink"
@@ -19,15 +22,48 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sys/unix"
+)
+
+const (
+	// AdvertiseAddrNMsgsMin defines the minimum number of ARP/NA messages sent when an
+	// interface is configured.
+	// Zero can be used to disable unsolicited ARP/NA.
+	AdvertiseAddrNMsgsMin = 0
+	// AdvertiseAddrNMsgsMax defines the maximum number of ARP/NA messages sent when an
+	// interface is configured. It's three, to match RFC-5227 Section 1.1
+	//	// ("PROBE_NUM=3") and RFC-4861 MAX_NEIGHBOR_ADVERTISEMENT.
+	AdvertiseAddrNMsgsMax = 3
+	// advertiseAddrNMsgsDefault is the default number of ARP/NA messages sent when
+	// an interface is configured.
+	advertiseAddrNMsgsDefault = 3
+
+	// AdvertiseAddrIntervalMin defines the minimum interval between ARP/NA messages
+	// sent when an interface is configured. The min defined here is nonstandard,
+	// RFC-5227 PROBE_MIN and the default for RetransTimer in RFC-4861 are one
+	// second. But, faster resends may be useful in a bridge network (where packets
+	// are not transmitted on a real network).
+	AdvertiseAddrIntervalMin = 100 * time.Millisecond
+	// AdvertiseAddrIntervalMax defines the maximum interval between ARP/NA messages
+	// sent when an interface is configured. The max of 2s matches RFC-5227
+	// PROBE_MAX.
+	AdvertiseAddrIntervalMax = 2 * time.Second
+	// advertiseAddrIntervalDefault is the default interval between ARP/NA messages
+	// sent when and interface is configured.
+	// One second matches RFC-5227 PROBE_MIN and the default for RetransTimer in RFC-4861.
+	advertiseAddrIntervalDefault = time.Second
 )
 
 // newInterface creates a new interface in the given namespace using the
 // provided options.
 func newInterface(ns *Namespace, srcName, dstPrefix string, options ...IfaceOption) (*Interface, error) {
 	i := &Interface{
-		srcName: srcName,
-		dstName: dstPrefix,
-		ns:      ns,
+		stopCh:                make(chan struct{}),
+		srcName:               srcName,
+		dstName:               dstPrefix,
+		advertiseAddrNMsgs:    advertiseAddrNMsgsDefault,
+		advertiseAddrInterval: advertiseAddrIntervalDefault,
+		ns:                    ns,
 	}
 	for _, opt := range options {
 		if opt != nil {
@@ -52,6 +88,7 @@ func newInterface(ns *Namespace, srcName, dstPrefix string, options ...IfaceOpti
 // host namespace to DstName in a different net namespace with the appropriate
 // network settings.
 type Interface struct {
+	stopCh      chan struct{} // stopCh is closed before the interface is deleted.
 	srcName     string
 	dstName     string
 	master      string
@@ -63,7 +100,14 @@ type Interface struct {
 	routes      []*net.IPNet
 	bridge      bool
 	sysctls     []string
-	ns          *Namespace
+	// advertiseAddrNMsgs is the number of unsolicited ARP/NA messages that will be sent to
+	// advertise the interface's addresses. No messages will be sent if this is zero.
+	advertiseAddrNMsgs int
+	// advertiseAddrInterval is the interval between unsolicited ARP/NA messages sent to
+	// advertise the interface's addresses.
+	advertiseAddrInterval time.Duration
+	createdInContainer    bool
+	ns                    *Namespace
 }
 
 // SrcName returns the name of the interface in the origin network namespace.
@@ -162,17 +206,12 @@ func (n *Namespace) findDst(srcName string, isBridge bool) string {
 	return ""
 }
 
-func moveLink(ctx context.Context, nlhHost nlwrap.Handle, iface netlink.Link, i *Interface, path string) error {
+func moveLink(ctx context.Context, nlhHost nlwrap.Handle, iface netlink.Link, i *Interface, nsh netns.NsHandle) error {
 	ctx, span := otel.Tracer("").Start(ctx, "libnetwork.osl.moveLink", trace.WithAttributes(
 		attribute.String("ifaceName", i.DstName())))
 	defer span.End()
 
-	newNs, err := netns.GetFromPath(path)
-	if err != nil {
-		return fmt.Errorf("failed get network namespace %q: %v", path, err)
-	}
-	defer newNs.Close()
-	if err := nlhHost.LinkSetNsFd(iface, int(newNs)); err != nil {
+	if err := nlhHost.LinkSetNsFd(iface, int(nsh)); err != nil {
 		return fmt.Errorf("failed to set namespace on link %q: %v", i.srcName, err)
 	}
 	return nil
@@ -208,6 +247,15 @@ func (n *Namespace) AddInterface(ctx context.Context, srcName, dstPrefix string,
 	nlhHost := ns.NlHandle()
 	n.mu.Unlock()
 
+	newNs := netns.None()
+	if !isDefault {
+		newNs, err = netns.GetFromPath(path)
+		if err != nil {
+			return fmt.Errorf("failed get network namespace %q: %v", path, err)
+		}
+		defer newNs.Close()
+	}
+
 	// If it is a bridge interface we have to create the bridge inside
 	// the namespace so don't try to lookup the interface using srcName
 	if i.bridge {
@@ -218,7 +266,7 @@ func (n *Namespace) AddInterface(ctx context.Context, srcName, dstPrefix string,
 		}); err != nil {
 			return fmt.Errorf("failed to create bridge %q: %v", i.srcName, err)
 		}
-	} else {
+	} else if !i.createdInContainer {
 		// Find the network interface identified by the SrcName attribute.
 		iface, err := nlhHost.LinkByName(i.srcName)
 		if err != nil {
@@ -229,7 +277,7 @@ func (n *Namespace) AddInterface(ctx context.Context, srcName, dstPrefix string,
 		// namespace only if the namespace is not a default
 		// type
 		if !isDefault {
-			if err := moveLink(ctx, nlhHost, iface, i, path); err != nil {
+			if err := moveLink(ctx, nlhHost, iface, i, newNs); err != nil {
 				return err
 			}
 		}
@@ -275,10 +323,27 @@ func (n *Namespace) AddInterface(ctx context.Context, srcName, dstPrefix string,
 	if err != nil {
 		return fmt.Errorf("failed to set link up: %v", err)
 	}
+	log.G(ctx).Debug("link has been set to up")
 
 	// Set the routes on the interface. This can only be done when the interface is up.
 	if err := setInterfaceRoutes(ctx, nlh, iface, i); err != nil {
 		return fmt.Errorf("error setting interface %q routes to %q: %v", iface.Attrs().Name, i.Routes(), err)
+	}
+
+	// Wait for the interface to be up and running (or a timeout).
+	up, err := waitForIfUpped(ctx, newNs, iface.Attrs().Index)
+	if err != nil {
+		return err
+	}
+
+	// If the interface is up, send unsolicited ARP/NA messages if necessary.
+	if up {
+		if err := waitForBridgePort(ctx, nlhHost, iface); err != nil {
+			return fmt.Errorf("check bridge port state: %w", err)
+		}
+		if err := n.advertiseAddrs(ctx, iface.Attrs().Index, i, nlh); err != nil {
+			return fmt.Errorf("failed to advertise addresses: %w", err)
+		}
 	}
 
 	n.mu.Lock()
@@ -288,9 +353,360 @@ func (n *Namespace) AddInterface(ctx context.Context, srcName, dstPrefix string,
 	return nil
 }
 
+func waitForIfUpped(ctx context.Context, ns netns.NsHandle, ifIndex int) (bool, error) {
+	ctx, span := otel.Tracer("").Start(context.WithoutCancel(ctx), "libnetwork.osl.waitforIfUpped")
+	defer span.End()
+
+	update := make(chan netlink.LinkUpdate, 100)
+	upped := make(chan struct{})
+	opts := netlink.LinkSubscribeOptions{
+		ListExisting: true, // in case the link is already up
+		ErrorCallback: func(err error) {
+			select {
+			case <-upped:
+				// Ignore errors sent after the upped channel is closed, the netlink
+				// package sends an EAGAIN after it closes its netlink socket when it
+				// sees this channel is closed. (No message is ever sent on upped.)
+				return
+			default:
+			}
+			log.G(ctx).WithFields(log.Fields{
+				"ifi":   ifIndex,
+				"error": err,
+			}).Info("netlink error while waiting for interface up")
+		},
+	}
+	if ns.IsOpen() {
+		opts.Namespace = &ns
+	}
+	if err := nlwrap.LinkSubscribeWithOptions(update, upped, opts); err != nil {
+		return false, fmt.Errorf("failed to subscribe to link updates: %w", err)
+	}
+
+	// When done (interface upped, or timeout), stop the LinkSubscribe and drain
+	// the result channel. If the result channel isn't closed after a timeout,
+	// log a warning to note the goroutine leak.
+	defer func() {
+		close(upped)
+		drainTimerC := time.After(3 * time.Second)
+		for {
+			select {
+			case _, ok := <-update:
+				if !ok {
+					return
+				}
+			case <-drainTimerC:
+				log.G(ctx).Warn("timeout while waiting for LinkSubscribe to terminate")
+			}
+		}
+	}()
+
+	timerC := time.After(5 * time.Second)
+	for {
+		select {
+		case <-timerC:
+			log.G(ctx).Warnf("timeout in waitForIfUpped")
+			return false, nil
+		case u, ok := <-update:
+			if !ok {
+				// The netlink package failed to read from its netlink socket. It will
+				// already have called the ErrorCallback, so the issue has been logged.
+				return false, nil
+			}
+			if u.Attrs().Index != ifIndex {
+				continue
+			}
+			log.G(ctx).WithFields(log.Fields{
+				"iface": u.Attrs().Name,
+				"ifi":   u.Attrs().Index,
+				"flags": deviceFlags(u.Flags),
+			}).Debug("link update")
+			if u.Flags&unix.IFF_UP == unix.IFF_UP {
+				return true, nil
+			}
+		}
+	}
+}
+
+// waitForBridgePort checks whether link iface is a veth. If it is, and the other
+// end of the veth is slaved to a bridge, waits for the bridge port's state to be
+// "forwarding". If STP is enabled on the bridge, it doesn't wait.
+func waitForBridgePort(ctx context.Context, nlh nlwrap.Handle, iface netlink.Link) error {
+	if iface.Type() != "veth" {
+		return nil
+	}
+	ctx, span := otel.Tracer("").Start(ctx, "libnetwork.osl.waitForBridgePort")
+	defer span.End()
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("veth", iface.Attrs().Name))
+
+	// The parent of a veth is the other end of the veth.
+	parentIndex := iface.Attrs().ParentIndex
+	if parentIndex <= 0 {
+		log.G(ctx).Debug("veth has no parent index")
+		return nil
+	}
+	parentIface, err := nlh.LinkByIndex(parentIndex)
+	if err != nil {
+		// The parent isn't in the host's netns, it's probably in a swarm load-balancer
+		// sandbox, and we don't know where that is. But, swarm still uses IP-based MAC
+		// addresses so the unsolicited ARPs aren't essential. If the first one goes
+		// missing because the bridge's port isn't forwarding yet, it's ok.
+		log.G(ctx).WithFields(log.Fields{"parentIndex": parentIndex, "error": err}).Debug("No parent interface")
+		return nil
+	}
+	// If the other end of the veth has a MasterIndex, that's a bridge.
+	if parentIface.Attrs().MasterIndex <= 0 {
+		log.G(ctx).Debug("veth is not connected to a bridge")
+		return nil
+	}
+	bridgeIface, err := nlh.LinkByIndex(parentIface.Attrs().MasterIndex)
+	if err != nil {
+		return fmt.Errorf("get bridge link by index %d: %w", parentIface.Attrs().MasterIndex, err)
+	}
+
+	// Ideally, we'd read the port state via netlink. But, vishvananda/netlink needs a
+	// patch to include state in its response.
+	// - type Protinfo needs a "State uint8"
+	// - parseProtinfo() needs "case nl.IFLA_BRPORT_STATE: pi.State = uint8(info.Value[0])"
+	/*
+		pi, err := nlh.LinkGetProtinfo(parentIface)
+		if err != nil {
+			return fmt.Errorf("get bridge protinfo: %w", err)
+		}
+	*/
+
+	// Check that STP is not enabled on the bridge. It won't be enabled on a
+	// bridge network's own bridge. But, could be on a user-supplied bridge
+	// and, if it is, it won't be forwarding within the timeout here.
+	if stpEnabled(ctx, bridgeIface.Attrs().Name) {
+		log.G(ctx).Debug("STP is enabled, not waiting for port to be forwarding")
+		return nil
+	}
+
+	// Read the port state from "/sys/class/net/<bridge>/brif/<veth>/state".
+	var portStateFile *os.File
+	path := filepath.Join("/sys/class/net", bridgeIface.Attrs().Name, "brif", parentIface.Attrs().Name, "state")
+	portStateFile, err = os.Open(path)
+	if err != nil {
+		// In integration tests where the daemon is running in its own netns, the bridge
+		// device isn't visible in "/sys/class/net". So, just wait for hopefully-long-enough
+		// for the bridge's port to be ready.
+		log.G(ctx).WithField("port", path).Debug("Failed to open port state file, waiting")
+		time.Sleep(20 * time.Millisecond)
+		return nil
+	}
+	defer portStateFile.Close()
+
+	// Poll the bridge port's state until it's "forwarding". (By now, it should be. So, poll
+	// quickly, and not for long.)
+	const pollInterval = 10 * time.Millisecond
+	const maxWait = 200 * time.Millisecond
+	for range int64(maxWait / pollInterval) {
+		var stateFileContent [2]byte
+		n, err := portStateFile.ReadAt(stateFileContent[:], 0)
+		if err != nil {
+			return fmt.Errorf("read %q: %w", path, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("empty file %q", path)
+		}
+		// Forwarding is state '3'.
+		// https://elixir.bootlin.com/linux/v6.13/source/include/uapi/linux/if_bridge.h#L49-L53
+		if stateFileContent[0] != '3' {
+			log.G(ctx).WithField("portState", stateFileContent[0]).Debug("waiting for bridge port to be forwarding")
+			time.Sleep(pollInterval)
+			continue
+		}
+		log.G(ctx).Debug("Bridge port is forwarding")
+		return nil
+	}
+	return fmt.Errorf("bridge port not forwarding after %v", maxWait)
+}
+
+// stpEnabled returns true if "/sys/class/net/<name>/bridge/stp_state" can be read
+// and does not contain "0".
+func stpEnabled(ctx context.Context, name string) bool {
+	stpStateFilename := filepath.Join("/sys/class/net", name, "bridge/stp_state")
+	stpState, err := os.ReadFile(stpStateFilename)
+	if err != nil {
+		log.G(ctx).WithError(err).Warnf("Failed to read stp_state file %q", stpStateFilename)
+		return false
+	}
+	return len(stpState) > 0 && stpState[0] != '0'
+}
+
+// advertiseAddrs triggers send unsolicited ARP and Neighbour Advertisement
+// messages, so that caches are updated with the MAC address currently associated
+// with the interface's IP addresses.
+//
+// IP addresses are recycled quickly when endpoints are dropped on network
+// disconnect or container stop. A new MAC address may have been generated, so
+// this is necessary to avoid packets sent to the old MAC address getting dropped
+// until the ARP/Neighbour cache entries expire.
+//
+// Note that the kernel's arp_notify sysctl setting is not respected.
+func (n *Namespace) advertiseAddrs(ctx context.Context, ifIndex int, i *Interface, nlh nlwrap.Handle) error {
+	mac := i.MacAddress()
+	address4 := i.Address()
+	address6 := i.AddressIPv6()
+	ctx = log.WithLogger(ctx, log.G(ctx).WithFields(log.Fields{
+		"iface": i.dstName,
+		"ifi":   ifIndex,
+		"mac":   mac.String(),
+		"ip4":   address4,
+		"ip6":   address6,
+	}))
+
+	if address4 == nil && address6 == nil {
+		// Nothing to do - for example, a bridge with no configured addresses.
+		log.G(ctx).Debug("No IP addresses to advertise")
+		return nil
+	}
+	if mac == nil {
+		// Nothing to do - for example, a layer-3 ipvlan.
+		log.G(ctx).Debug("No MAC address to advertise")
+		return nil
+	}
+	if i.advertiseAddrNMsgs == 0 {
+		log.G(ctx).Debug("Unsolicited ARP/NA is disabled")
+		return nil
+	}
+
+	arpSender, naSender := n.prepAdvertiseAddrs(ctx, i, ifIndex)
+	if arpSender == nil && naSender == nil {
+		return nil
+	}
+	cleanup := func() {
+		if arpSender != nil {
+			arpSender.Close()
+		}
+		if naSender != nil {
+			naSender.Close()
+		}
+	}
+	stillSending := false
+	defer func() {
+		if !stillSending {
+			cleanup()
+		}
+	}()
+
+	send := func(ctx context.Context) error {
+		link, err := nlh.LinkByIndex(ifIndex)
+		if err != nil {
+			return fmt.Errorf("failed to refresh link attributes: %w", err)
+		}
+		if curMAC := link.Attrs().HardwareAddr; !bytes.Equal(curMAC, mac) {
+			log.G(ctx).WithFields(log.Fields{"newMAC": curMAC.String()}).Warn("MAC address changed")
+			return fmt.Errorf("MAC address changed, got %s, expected %s", curMAC, mac.String())
+		}
+		log.G(ctx).Debug("Sending unsolicited ARP/NA")
+		var errs []error
+		if arpSender != nil {
+			if err := arpSender.Send(); err != nil {
+				log.G(ctx).WithError(err).Warn("Failed to send unsolicited ARP")
+				errs = append(errs, err)
+			}
+		}
+		if naSender != nil {
+			// FIXME(robmry) - retry if this fails, but still return the error.
+			// In CI, the send has failed a couple of times with "write ip ::1->ff02::1: sendmsg: network is unreachable".
+			// Can't repro locally, so - try find out whether a retry helps and it's something racing, or it's a
+			// persistent problem.
+			for c := range 3 {
+				if c > 0 {
+					time.Sleep(50 * time.Millisecond)
+				}
+
+				routes, rgErr := nlh.RouteGetWithOptions(net.IPv6linklocalallnodes, &netlink.RouteGetOptions{
+					IifIndex: ifIndex,
+					SrcAddr:  net.IPv6loopback,
+				})
+				var routeStr string
+				if rgErr != nil {
+					routeStr = fmt.Sprintf("RouteGet->'%s'", rgErr.Error())
+				} else if len(routes) != 1 {
+					routeStr = fmt.Sprintf("RouteGet->%d routes", len(routes))
+				} else {
+					routeStr = fmt.Sprintf("RouteGet->'%s'", routes[0].String())
+				}
+
+				if err := naSender.Send(); err != nil {
+					log.G(ctx).WithError(err).Warn("Failed to send unsolicited NA")
+					errs = append(errs, fmt.Errorf("%s: %w", routeStr, err))
+					continue
+				}
+				if c > 0 {
+					errs = append(errs, fmt.Errorf("success"))
+				}
+				break
+			}
+		}
+		return errors.Join(errs...)
+	}
+
+	// Send an initial message. If it fails, skip the resends.
+	if err := send(ctx); err != nil {
+		return err
+	}
+	if i.advertiseAddrNMsgs == 1 {
+		return nil
+	}
+	// Don't clean up on return from this function, there are more ARPs/NAs to send.
+	stillSending = true
+
+	// Send the rest in the background.
+	go func() {
+		defer cleanup()
+		ctx, span := otel.Tracer("").Start(context.WithoutCancel(ctx), "libnetwork.osl.advertiseAddrs")
+		defer span.End()
+		ticker := time.NewTicker(i.advertiseAddrInterval)
+		defer ticker.Stop()
+		for c := range i.advertiseAddrNMsgs - 1 {
+			select {
+			case <-i.stopCh:
+				log.G(ctx).Debug("Unsolicited ARP/NA sends cancelled")
+				return
+			case <-ticker.C:
+				if send(log.WithLogger(ctx, log.G(ctx).WithFields(log.Fields{"n": c + 1}))) != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (n *Namespace) prepAdvertiseAddrs(ctx context.Context, i *Interface, ifIndex int) (*l2disco.UnsolARP, *l2disco.UnsolNA) {
+	var ua *l2disco.UnsolARP
+	var un *l2disco.UnsolNA
+	if err := n.InvokeFunc(func() {
+		if address4 := i.Address(); address4 != nil {
+			var err error
+			ua, err = l2disco.NewUnsolARP(ctx, address4.IP, i.MacAddress(), ifIndex)
+			if err != nil {
+				log.G(ctx).WithError(err).Warn("Failed to prepare unsolicited ARP")
+			}
+		}
+		if address6 := i.AddressIPv6(); address6 != nil {
+			var err error
+			un, err = l2disco.NewUnsolNA(ctx, address6.IP, i.MacAddress(), ifIndex)
+			if err != nil {
+				log.G(ctx).WithError(err).Warn("Failed to prepare unsolicited NA")
+			}
+		}
+	}); err != nil {
+		log.G(ctx).WithError(err).Warn("Failed to prepare unsolicited ARP/NA messages")
+		return nil, nil
+	}
+	return ua, un
+}
+
 // RemoveInterface removes an interface from the namespace by renaming to
 // original name and moving it out of the sandbox.
 func (n *Namespace) RemoveInterface(i *Interface) error {
+	close(i.stopCh)
 	n.mu.Lock()
 	isDefault := n.isDefault
 	nlh := n.nlHandle

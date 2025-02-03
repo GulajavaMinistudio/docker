@@ -41,7 +41,6 @@ import (
 	lntypes "github.com/docker/docker/libnetwork/types"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/idtools"
-	"github.com/docker/docker/pkg/parsers/kernel"
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/runconfig"
 	volumemounts "github.com/docker/docker/volume/mounts"
@@ -137,10 +136,10 @@ func getPidsLimit(config containertypes.Resources) *specs.LinuxPids {
 func getCPUResources(config containertypes.Resources) (*specs.LinuxCPU, error) {
 	cpu := specs.LinuxCPU{}
 
-	if config.CPUShares < 0 {
-		return nil, fmt.Errorf("shares: invalid argument")
-	}
-	if config.CPUShares > 0 {
+	if config.CPUShares != 0 {
+		if config.CPUShares < 0 {
+			return nil, fmt.Errorf("invalid CPU shares (%d): value must be a positive integer", config.CPUShares)
+		}
 		shares := uint64(config.CPUShares)
 		cpu.Shares = &shares
 	}
@@ -222,6 +221,11 @@ func parseSecurityOpt(securityOptions *container.SecurityOptions, config *contai
 			securityOptions.NoNewPrivileges = true
 			continue
 		}
+		if opt == "writable-cgroups" {
+			trueVal := true
+			securityOptions.WritableCgroups = &trueVal
+			continue
+		}
 		if opt == "disable" {
 			labelOpts = append(labelOpts, "disable")
 			continue
@@ -252,6 +256,12 @@ func parseSecurityOpt(securityOptions *container.SecurityOptions, config *contai
 				return fmt.Errorf("invalid --security-opt 2: %q", opt)
 			}
 			securityOptions.NoNewPrivileges = nnp
+		case "writable-cgroups":
+			writableCgroups, err := strconv.ParseBool(v)
+			if err != nil {
+				return fmt.Errorf("invalid --security-opt 2: %q", opt)
+			}
+			securityOptions.WritableCgroups = &writableCgroups
 		default:
 			return fmt.Errorf("invalid --security-opt 2: %q", opt)
 		}
@@ -454,9 +464,6 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, sysIn
 		if resources.KernelMemory > 0 && resources.KernelMemory < linuxMinMemory {
 			return warnings, fmt.Errorf("Minimum kernel memory limit allowed is 6MB")
 		}
-		if !kernel.CheckKernelVersion(4, 0, 0) {
-			warnings = append(warnings, "You specified a kernel memory limit on a kernel older than 4.0. Kernel memory limits are experimental on older kernels, it won't work as expected and can cause your system to be unstable.")
-		}
 	}
 	if resources.OomKillDisable != nil && !sysInfo.OomKillDisable {
 		// only produce warnings if the setting wasn't to *disable* the OOM Kill; no point
@@ -494,7 +501,7 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, sysIn
 	// Here we don't set the lower limit and it is up to the underlying platform (e.g., Linux) to return an error.
 	// The error message is 0.01 so that this is consistent with Windows
 	if resources.NanoCPUs != 0 {
-		nc := sysinfo.NumCPU()
+		nc := runtime.NumCPU()
 		if resources.NanoCPUs < 0 || resources.NanoCPUs > int64(nc)*1e9 {
 			return warnings, fmt.Errorf("range of CPUs is from 0.01 to %[1]d.00, as there are only %[1]d CPUs available", nc)
 		}
@@ -943,7 +950,7 @@ func (o defBrOptsV4) bip() (bip, optName string) {
 }
 
 func (o defBrOptsV4) defGw() (gw net.IP, optName, auxAddrLabel string) {
-	return o.cfg.DefaultGatewayIPv4, "default-gateway", "DefaultGatewayIPv4"
+	return o.cfg.DefaultGatewayIPv4, "default-gateway", bridge.DefaultGatewayV4AuxKey
 }
 
 type defBrOptsV6 struct {
@@ -963,7 +970,7 @@ func (o defBrOptsV6) bip() (bip, optName string) {
 }
 
 func (o defBrOptsV6) defGw() (gw net.IP, optName, auxAddrLabel string) {
-	return o.cfg.DefaultGatewayIPv6, "default-gateway-v6", "DefaultGatewayIPv6"
+	return o.cfg.DefaultGatewayIPv6, "default-gateway-v6", bridge.DefaultGatewayV6AuxKey
 }
 
 type defBrOpts interface {
@@ -992,29 +999,11 @@ func initBridgeDriver(controller *libnetwork.Controller, cfg config.BridgeConfig
 		return err
 	}
 
-	var deferIPv6Alloc bool
 	var ipamV6Conf []*libnetwork.IpamConf
 	if cfg.EnableIPv6 {
 		ipamV6Conf, err = getDefaultBridgeIPAMConf(bridgeName, userManagedBridge, defBrOptsV6{cfg})
 		if err != nil {
 			return err
-		}
-		// If the subnet has at least 48 host bits, preserve the legacy default bridge
-		// behaviour of constructing a MAC address from the IPv4 address, then
-		// constructing an IPv6 addresses based on that MAC address. Tell libnetwork to
-		// defer the IPv6 address allocation for endpoints on this network until after
-		// the driver has created the endpoint and proposed an IPv4 address. Libnetwork
-		// will then reserve this address with the ipam driver. If no preferred pool has
-		// been set the built-in ULA prefix will be used, assume it has at-least 48-bits.
-		if len(ipamV6Conf) == 0 || ipamV6Conf[0].PreferredPool == "" {
-			deferIPv6Alloc = true
-		} else {
-			_, ppNet, err := net.ParseCIDR(ipamV6Conf[0].PreferredPool)
-			if err != nil {
-				return err
-			}
-			ones, _ := ppNet.Mask.Size()
-			deferIPv6Alloc = ones <= 80
 		}
 	}
 
@@ -1024,7 +1013,7 @@ func initBridgeDriver(controller *libnetwork.Controller, cfg config.BridgeConfig
 		libnetwork.NetworkOptionEnableIPv6(cfg.EnableIPv6),
 		libnetwork.NetworkOptionDriverOpts(netOption),
 		libnetwork.NetworkOptionIpam("default", "", ipamV4Conf, ipamV6Conf, nil),
-		libnetwork.NetworkOptionDeferIPv6Alloc(deferIPv6Alloc))
+	)
 	if err != nil {
 		return fmt.Errorf(`error creating default %q network: %v`, network.NetworkBridge, err)
 	}

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containerd/containerd"
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/versions"
@@ -643,6 +643,11 @@ func TestCreateInvalidHostConfig(t *testing.T) {
 			doc:         "invalid Annotations",
 			hc:          container.HostConfig{Annotations: map[string]string{"": "a"}},
 			expectedErr: "Error response from daemon: invalid Annotations: the empty string is not permitted as an annotation key",
+		},
+		{
+			doc:         "invalid CPUShares",
+			hc:          container.HostConfig{Resources: container.Resources{CPUShares: -1}},
+			expectedErr: "Error response from daemon: invalid CPU shares (-1): value must be a positive integer",
 		},
 	}
 

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containerd/containerd/tracing"
+	"github.com/containerd/containerd/v2/pkg/tracing"
 	"github.com/containerd/log"
 	"github.com/docker/docker/api"
 	"github.com/docker/docker/api/types"
@@ -64,7 +64,7 @@ func (daemon *Daemon) SystemInfo(ctx context.Context) (*system.Info, error) {
 		OSType:             runtime.GOOS,
 		Architecture:       platform.Architecture(),
 		RegistryConfig:     doWithTrace(ctx, "registry.ServiceConfig", daemon.registryService.ServiceConfig),
-		NCPU:               doWithTrace(ctx, "sysinfo.NumCPU", sysinfo.NumCPU),
+		NCPU:               doWithTrace(ctx, "runtime.NumCPU", runtime.NumCPU),
 		MemTotal:           memInfo(ctx).MemTotal,
 		GenericResources:   daemon.genericResources,
 		DockerRootDir:      cfg.Root,
@@ -372,14 +372,11 @@ func getConfigOrEnv(config string, env ...string) string {
 	return getEnvAny(env...)
 }
 
-// promoteNil converts a nil slice to an empty slice.
+// promoteNil converts a nil slice to an empty slice of that type.
 // A non-nil slice is returned as is.
-//
-// TODO: make generic again once we are a go module,
-// go.dev/issue/64759 is fixed, or we drop support for Go 1.21.
-func promoteNil(s []string) []string {
+func promoteNil[S ~[]E, E any](s S) S {
 	if s == nil {
-		return []string{}
+		return S{}
 	}
 	return s
 }

@@ -10,20 +10,20 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Microsoft/hcsshim"
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/libcontainerd/queue"
 	libcontainerdtypes "github.com/docker/docker/libcontainerd/types"
-	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/pkg/system"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -366,7 +366,7 @@ func (c *client) extractResourcesFromSpec(spec *specs.Spec, configuration *hcssh
 				// because we don't want to update the HostConfig in case this container
 				// is moved to a host with more CPUs than this one.
 				cpuCount := *spec.Windows.Resources.CPU.Count
-				hostCPUCount := uint64(sysinfo.NumCPU())
+				hostCPUCount := uint64(runtime.NumCPU())
 				if cpuCount > hostCPUCount {
 					c.logger.Warnf("Changing requested CPUCount of %d to current number of processors, %d", cpuCount, hostCPUCount)
 					cpuCount = hostCPUCount

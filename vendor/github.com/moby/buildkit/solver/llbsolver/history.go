@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/leases"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/leases"
 	cerrdefs "github.com/containerd/errdefs"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client"
@@ -679,6 +679,8 @@ func (h *HistoryQueue) Update(ctx context.Context, e *controlapi.BuildHistoryEve
 	h.init()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	e = e.CloneVT()
 
 	if e.Type == controlapi.BuildHistoryEventType_STARTED {
 		h.active[e.Record.Ref] = e.Record

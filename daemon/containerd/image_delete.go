@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	c8dimages "github.com/containerd/containerd/images"
+	c8dimages "github.com/containerd/containerd/v2/core/images"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
@@ -235,7 +235,7 @@ func (i *ImageService) deleteAll(ctx context.Context, imgID image.ID, all []c8di
 			return records, err
 		}
 	}
-	i.LogImageEvent(imgID.String(), imgID.String(), events.ActionDelete)
+	i.LogImageEvent(ctx, imgID.String(), imgID.String(), events.ActionDelete)
 	records = append(records, imagetypes.DeleteResponse{Deleted: imgID.String()})
 
 	for _, parent := range parents {
@@ -248,7 +248,7 @@ func (i *ImageService) deleteAll(ctx context.Context, imgID image.ID, all []c8di
 			break
 		}
 		parentID := parent.Target.Digest.String()
-		i.LogImageEvent(parentID, parentID, events.ActionDelete)
+		i.LogImageEvent(ctx, parentID, parentID, events.ActionDelete)
 		records = append(records, imagetypes.DeleteResponse{Deleted: parentID})
 	}
 

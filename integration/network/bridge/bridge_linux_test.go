@@ -14,6 +14,7 @@ import (
 	ctr "github.com/docker/docker/integration/internal/container"
 	"github.com/docker/docker/integration/internal/network"
 	"github.com/docker/docker/internal/testutils/networking"
+	"github.com/docker/docker/libnetwork/drivers/bridge"
 	"github.com/docker/docker/testutil"
 	"github.com/docker/docker/testutil/daemon"
 	"gotest.tools/v3/assert"
@@ -140,10 +141,9 @@ func TestIPRangeAt64BitLimit(t *testing.T) {
 	c := testEnv.APIClient()
 
 	tests := []struct {
-		name       string
-		subnet     string
-		ipRange    string
-		expCtrFail bool
+		name    string
+		subnet  string
+		ipRange string
 	}{
 		{
 			name:    "ipRange before end of 64-bit subnet",
@@ -154,22 +154,11 @@ func TestIPRangeAt64BitLimit(t *testing.T) {
 			name:    "ipRange at end of 64-bit subnet",
 			subnet:  "fda9:8d04:086e::/64",
 			ipRange: "fda9:8d04:086e::ffff:ffff:ffff:fffe/127",
-			// FIXME(robmry) - there should be two addresses available for
-			//  allocation, just like the previous test. One for the gateway
-			//  and one for the container. But, because the Bitmap in the
-			//  allocator can't cope with a range that includes MaxUint64,
-			//  only one address is currently available - so the container
-			//  will not start.
-			expCtrFail: true,
 		},
 		{
 			name:    "ipRange at 64-bit boundary inside 56-bit subnet",
 			subnet:  "fda9:8d04:086e::/56",
 			ipRange: "fda9:8d04:086e:aa:ffff:ffff:ffff:fffe/127",
-			// FIXME(robmry) - same issue as above, but this time the ip-range
-			//  is in the middle of the subnet (on a 64-bit boundary) rather
-			//  than at the top end.
-			expCtrFail: true,
 		},
 	}
 
@@ -186,12 +175,7 @@ func TestIPRangeAt64BitLimit(t *testing.T) {
 			id := ctr.Create(ctx, t, c, ctr.WithNetworkMode(netName))
 			defer c.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
 			err := c.ContainerStart(ctx, id, containertypes.StartOptions{})
-			if tc.expCtrFail {
-				assert.Assert(t, err != nil)
-				t.Skipf("XFAIL Container startup failed with error: %v", err)
-			} else {
-				assert.NilError(t, err)
-			}
+			assert.NilError(t, err)
 		})
 	}
 }
@@ -314,4 +298,38 @@ func TestFilterForwardPolicy(t *testing.T) {
 			assert.Check(t, is.Equal(getSysctls(), sysctls{tc.expForwarding, tc.expForwarding, tc.expForwarding}))
 		})
 	}
+}
+
+// TestPointToPoint checks that a "/31" --internal network with inhibit_ipv4
+// has two addresses available for containers (no address is reserved for a
+// gateway, because it won't be used).
+func TestPointToPoint(t *testing.T) {
+	ctx := setupTest(t)
+	apiClient := testEnv.APIClient()
+
+	const netName = "testp2pbridge"
+	network.CreateNoError(ctx, t, apiClient, netName,
+		network.WithIPAM("192.168.135.0/31", ""),
+		network.WithInternal(),
+		network.WithOption(bridge.InhibitIPv4, "true"),
+	)
+	defer network.RemoveNoError(ctx, t, apiClient, netName)
+
+	const ctrName = "ctr1"
+	id := ctr.Run(ctx, t, apiClient,
+		ctr.WithNetworkMode(netName),
+		ctr.WithName(ctrName),
+	)
+	defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+
+	attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res := ctr.RunAttach(attachCtx, t, apiClient,
+		ctr.WithCmd([]string{"ping", "-c1", "-W3", ctrName}...),
+		ctr.WithNetworkMode(netName),
+	)
+	defer apiClient.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{Force: true})
+	assert.Check(t, is.Equal(res.ExitCode, 0))
+	assert.Check(t, is.Equal(res.Stderr.Len(), 0))
+	assert.Check(t, is.Contains(res.Stdout.String(), "1 packets transmitted, 1 packets received"))
 }

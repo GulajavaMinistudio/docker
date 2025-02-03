@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containerd/containerd"
-	c8dimages "github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/pkg/snapshotters"
-	"github.com/containerd/containerd/remotes/docker"
+	containerd "github.com/containerd/containerd/v2/client"
+	c8dimages "github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/remotes/docker"
+	"github.com/containerd/containerd/v2/pkg/snapshotters"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
@@ -246,7 +246,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 		logger.WithError(err).Warn("unexpected error while removing outdated dangling image reference")
 	}
 
-	i.LogImageEvent(reference.FamiliarString(ref), reference.FamiliarName(ref), events.ActionPull)
+	i.LogImageEvent(ctx, reference.FamiliarString(ref), reference.FamiliarName(ref), events.ActionPull)
 	outNewImg = img
 	return nil
 }

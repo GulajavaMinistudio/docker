@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -94,9 +95,6 @@ func TestDockerNetworkIpvlan(t *testing.T) {
 		}, {
 			name: "L3Addressing",
 			test: testIpvlanL3Addressing,
-		}, {
-			name: "IpvlanExperimentalV4Only",
-			test: testIpvlanExperimentalV4Only,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -443,18 +441,6 @@ func testIpvlanL3Addressing(t *testing.T, ctx context.Context, client dclient.AP
 	assert.Check(t, is.Contains(result.Combined(), "default dev eth0"))
 }
 
-// Check that '--ipv4=false' is only allowed with '--experimental'.
-// (Remember to remove `--experimental' from TestMacvlanIPAM when it's
-// no longer needed, and maybe use a single daemon for all of its tests.)
-func testIpvlanExperimentalV4Only(t *testing.T, ctx context.Context, client dclient.APIClient) {
-	_, err := net.Create(ctx, client, "testnet",
-		net.WithIPvlan("", "l3"),
-		net.WithIPv4(false),
-	)
-	defer client.NetworkRemove(ctx, "testnet")
-	assert.ErrorContains(t, err, "IPv4 can only be disabled if experimental features are enabled")
-}
-
 // Check that an ipvlan interface with '--ipv6=false' doesn't get kernel-assigned
 // IPv6 addresses, but the loopback interface does still have an IPv6 address ('::1').
 // Also check that with '--ipv4=false', there's no IPAM-assigned IPv4 address.
@@ -463,6 +449,9 @@ func TestIpvlanIPAM(t *testing.T) {
 	skip.If(t, testEnv.IsRootless, "rootless mode has different view of network")
 
 	ctx := testutil.StartSpan(baseContext, t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
 
 	tests := []struct {
 		name       string
@@ -498,14 +487,6 @@ func TestIpvlanIPAM(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := testutil.StartSpan(ctx, t)
-
-			var daemonOpts []daemon.Option
-			if !tc.enableIPv4 {
-				daemonOpts = append(daemonOpts, daemon.WithExperimental())
-			}
-			d := daemon.New(t, daemonOpts...)
-			d.StartWithBusybox(ctx, t)
-			t.Cleanup(func() { d.Stop(t) })
 			c := d.NewClientT(t, dclient.WithVersion(tc.apiVersion))
 
 			netOpts := []func(*network.CreateOptions){
@@ -631,5 +612,73 @@ func TestIPVlanDNS(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestPointToPoint checks that no gateway is reserved for an ipvlan network unless needed.
+func TestPointToPoint(t *testing.T) {
+	skip.If(t, testEnv.IsRootless, "can't see dummy parent interface from rootless netns")
+
+	ctx := testutil.StartSpan(baseContext, t)
+	apiClient := testEnv.APIClient()
+
+	const parentIfname = "di-dummy0"
+	n.CreateMasterDummy(ctx, t, parentIfname)
+	defer n.DeleteInterface(ctx, t, parentIfname)
+
+	tests := []struct {
+		name   string
+		parent string
+		mode   string
+	}{
+		{
+			// An ipvlan network with no parent interface is "internal".
+			name: "internal",
+			mode: "l2",
+		},
+		{
+			// An L3 ipvlan does not need a gateway, because it's L3 (so, can't
+			// resolve a next-hop address). A "/31" ipvlan with two containers
+			// may not be particularly useful, but the check is that no address is
+			// reserved for a gateway in an L3 network.
+			name:   "l3",
+			parent: parentIfname,
+			mode:   "l3",
+		},
+		{
+			name:   "l3s",
+			parent: parentIfname,
+			mode:   "l3s",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testutil.StartSpan(ctx, t)
+			const netName = "p2pipvlan"
+			net.CreateNoError(ctx, t, apiClient, netName,
+				net.WithIPvlan(tc.parent, tc.mode),
+				net.WithIPAM("192.168.135.0/31", ""),
+			)
+			defer net.RemoveNoError(ctx, t, apiClient, netName)
+
+			const ctrName = "ctr1"
+			id := container.Run(ctx, t, apiClient,
+				container.WithNetworkMode(netName),
+				container.WithName(ctrName),
+			)
+			defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+
+			attachCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			res := container.RunAttach(attachCtx, t, apiClient,
+				container.WithCmd([]string{"ping", "-c1", "-W3", ctrName}...),
+				container.WithNetworkMode(netName),
+			)
+			defer apiClient.ContainerRemove(ctx, res.ContainerID, containertypes.RemoveOptions{Force: true})
+			assert.Check(t, is.Equal(res.ExitCode, 0))
+			assert.Check(t, is.Equal(res.Stderr.Len(), 0))
+			assert.Check(t, is.Contains(res.Stdout.String(), "1 packets transmitted, 1 packets received"))
+		})
 	}
 }
