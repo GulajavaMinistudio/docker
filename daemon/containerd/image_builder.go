@@ -28,14 +28,12 @@ import (
 	"github.com/docker/docker/builder"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/image"
-	dimage "github.com/docker/docker/image"
 	"github.com/docker/docker/layer"
-	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
 	"github.com/docker/docker/pkg/stringid"
-	registrypkg "github.com/docker/docker/registry"
 	imagespec "github.com/moby/docker-image-spec/specs-go/v1"
+	"github.com/moby/go-archive"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -72,7 +70,7 @@ func (i *ImageService) GetImageAndReleasableLayer(ctx context.Context, refOrID s
 			return nil, nil, fmt.Errorf(`"FROM scratch" is not supported on Windows`)
 		}
 		if opts.Platform != nil {
-			if err := dimage.CheckOS(opts.Platform.OS); err != nil {
+			if err := image.CheckOS(opts.Platform.OS); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -93,7 +91,7 @@ func (i *ImageService) GetImageAndReleasableLayer(ctx context.Context, refOrID s
 			return nil, nil, err
 		}
 		if img != nil {
-			if err := dimage.CheckOS(img.OperatingSystem()); err != nil {
+			if err := image.CheckOS(img.OperatingSystem()); err != nil {
 				return nil, nil, err
 			}
 
@@ -144,12 +142,7 @@ func (i *ImageService) pullForBuilder(ctx context.Context, name string, authConf
 	pullRegistryAuth := &registry.AuthConfig{}
 	if len(authConfigs) > 0 {
 		// The request came with a full auth config, use it
-		repoInfo, err := i.registryService.ResolveRepository(ref)
-		if err != nil {
-			return nil, err
-		}
-
-		resolvedConfig := registrypkg.ResolveAuthConfig(authConfigs, repoInfo.Index)
+		resolvedConfig := i.registryService.ResolveAuthConfig(authConfigs, ref)
 		pullRegistryAuth = &resolvedConfig
 	}
 
@@ -182,7 +175,7 @@ Please notify the image author to correct the configuration.`,
 		}
 	}
 
-	if err := dimage.CheckOS(img.OperatingSystem()); err != nil {
+	if err := image.CheckOS(img.OperatingSystem()); err != nil {
 		return nil, err
 	}
 
@@ -432,7 +425,7 @@ func (rw *rwlayer) Release() (outErr error) {
 // This is similar to LoadImage() except that it receives JSON encoded bytes of
 // an image instead of a tar archive.
 func (i *ImageService) CreateImage(ctx context.Context, config []byte, parent string, layerDigest digest.Digest) (builder.Image, error) {
-	imgToCreate, err := dimage.NewFromJSON(config)
+	imgToCreate, err := image.NewFromJSON(config)
 	if err != nil {
 		return nil, err
 	}
@@ -487,13 +480,13 @@ func (i *ImageService) CreateImage(ctx context.Context, config []byte, parent st
 		return nil, err
 	}
 
-	return dimage.Clone(imgToCreate, createdImageId), nil
+	return image.Clone(imgToCreate, createdImageId), nil
 }
 
 func (i *ImageService) createImageOCI(ctx context.Context, imgToCreate imagespec.DockerOCIImage,
 	parentDigest digest.Digest, layers []ocispec.Descriptor,
 	containerConfig container.Config,
-) (dimage.ID, error) {
+) (image.ID, error) {
 	ctx, release, err := i.withLease(ctx, false)
 	if err != nil {
 		return "", err

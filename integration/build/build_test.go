@@ -181,7 +181,7 @@ func TestBuildMultiStageCopy(t *testing.T) {
 			assert.NilError(t, err)
 
 			// verify the image was successfully built
-			_, _, err = apiclient.ImageInspectWithRaw(ctx, imgName)
+			_, err = apiclient.ImageInspect(ctx, imgName)
 			if err != nil {
 				t.Log(out)
 			}
@@ -222,7 +222,7 @@ func TestBuildMultiStageParentConfig(t *testing.T) {
 	assert.Check(t, resp.Body.Close())
 	assert.NilError(t, err)
 
-	img, _, err := apiclient.ImageInspectWithRaw(ctx, imgName)
+	img, err := apiclient.ImageInspect(ctx, imgName)
 	assert.NilError(t, err)
 
 	expected := "/foo/sub2"
@@ -271,7 +271,7 @@ func TestBuildLabelWithTargets(t *testing.T) {
 	assert.Check(t, resp.Body.Close())
 	assert.NilError(t, err)
 
-	img, _, err := apiclient.ImageInspectWithRaw(ctx, imgName)
+	img, err := apiclient.ImageInspect(ctx, imgName)
 	assert.NilError(t, err)
 
 	testLabels["label-a"] = "inline-a"
@@ -298,7 +298,7 @@ func TestBuildLabelWithTargets(t *testing.T) {
 	assert.Check(t, resp.Body.Close())
 	assert.NilError(t, err)
 
-	img, _, err = apiclient.ImageInspectWithRaw(ctx, imgName)
+	img, err = apiclient.ImageInspect(ctx, imgName)
 	assert.NilError(t, err)
 
 	testLabels["label-b"] = "inline-b"
@@ -380,7 +380,7 @@ RUN cat somefile`
 	assert.NilError(t, err)
 	assert.Assert(t, is.Equal(3, len(imageIDs)))
 
-	img, _, err := apiclient.ImageInspectWithRaw(ctx, imageIDs[2])
+	img, err := apiclient.ImageInspect(ctx, imageIDs[2])
 	assert.NilError(t, err)
 	assert.Check(t, is.Contains(img.Config.Env, "bar=baz"))
 }
@@ -741,8 +741,6 @@ func TestBuildEmitsImageCreateEvent(t *testing.T) {
 	for _, builderVersion := range []types.BuilderVersion{types.BuilderV1, types.BuilderBuildKit} {
 		t.Run("v"+string(builderVersion), func(t *testing.T) {
 			if builderVersion == types.BuilderBuildKit {
-				skip.If(t, testEnv.UsingSnapshotter(),
-					"FIXME: Passing a context via a tarball is not supported with the containerd image store. See: https://github.com/moby/moby/issues/47717")
 				skip.If(t, testEnv.DaemonInfo.OSType == "windows", "Buildkit is not supported on Windows")
 			}
 

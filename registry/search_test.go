@@ -17,7 +17,7 @@ import (
 
 func spawnTestRegistrySession(t *testing.T) *session {
 	authConfig := &registry.AuthConfig{}
-	endpoint, err := newV1Endpoint(makeIndex("/v1/"), nil)
+	endpoint, err := newV1Endpoint(context.Background(), makeIndex("/v1/"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func spawnTestRegistrySession(t *testing.T) *session {
 	tr = transport.NewTransport(newAuthTransport(tr, authConfig, false), Headers(userAgent, nil)...)
 	client := httpClient(tr)
 
-	if err := authorizeClient(client, authConfig, endpoint); err != nil {
+	if err := authorizeClient(context.Background(), client, authConfig, endpoint); err != nil {
 		t.Fatal(err)
 	}
 	r := newSession(client, endpoint)
@@ -70,7 +70,7 @@ func (tr debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestSearchRepositories(t *testing.T) {
 	r := spawnTestRegistrySession(t)
-	results, err := r.searchRepositories("fakequery", 25)
+	results, err := r.searchRepositories(context.Background(), "fakequery", 25)
 	if err != nil {
 		t.Fatal(err)
 	}

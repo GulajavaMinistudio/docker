@@ -24,10 +24,10 @@ import (
 	"github.com/docker/docker/libnetwork/netlabel"
 	"github.com/docker/docker/libnetwork/options"
 	"github.com/docker/docker/libnetwork/scope"
-	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/parsers/operatingsystem"
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/pkg/system"
+	"github.com/moby/sys/user"
 	"github.com/pkg/errors"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -56,7 +56,7 @@ func (daemon *Daemon) parseSecurityOpt(daemonCfg *config.Config, securityOptions
 	return nil
 }
 
-func setupInitLayer(idMapping idtools.IdentityMapping) func(string) error {
+func setupInitLayer(uid int, gid int) func(string) error {
 	return nil
 }
 
@@ -67,7 +67,7 @@ func (daemon *Daemon) adaptContainerSettings(daemonCfg *config.Config, hostConfi
 }
 
 // verifyPlatformContainerResources performs platform-specific validation of the container's resource-configuration
-func verifyPlatformContainerResources(resources *containertypes.Resources, isHyperv bool) (warnings []string, err error) {
+func verifyPlatformContainerResources(resources *containertypes.Resources, isHyperv bool) (warnings []string, _ error) {
 	fixMemorySwappiness(resources)
 	if !isHyperv {
 		// The processor resource controls are mutually exclusive on
@@ -171,7 +171,7 @@ func verifyPlatformContainerResources(resources *containertypes.Resources, isHyp
 
 // verifyPlatformContainerSettings performs platform-specific validation of the
 // hostconfig and config structures.
-func verifyPlatformContainerSettings(daemon *Daemon, daemonCfg *configStore, hostConfig *containertypes.HostConfig, update bool) (warnings []string, err error) {
+func verifyPlatformContainerSettings(daemon *Daemon, daemonCfg *configStore, hostConfig *containertypes.HostConfig, update bool) (warnings []string, _ error) {
 	if hostConfig == nil {
 		return nil, nil
 	}
@@ -228,7 +228,7 @@ func configureKernelSecuritySupport(config *config.Config, driverName string) er
 }
 
 // configureMaxThreads sets the Go runtime max threads threshold
-func configureMaxThreads(config *config.Config) error {
+func configureMaxThreads(_ context.Context) error {
 	return nil
 }
 
@@ -237,7 +237,7 @@ func (daemon *Daemon) initNetworkController(daemonCfg *config.Config, activeSand
 	if err != nil {
 		return err
 	}
-	daemon.netController, err = libnetwork.New(netOptions...)
+	daemon.netController, err = libnetwork.New(context.TODO(), netOptions...)
 	if err != nil {
 		return errors.Wrap(err, "error obtaining controller instance")
 	}
@@ -279,7 +279,7 @@ func (daemon *Daemon) initNetworkController(daemonCfg *config.Config, activeSand
 					log.G(context.TODO()).Errorf("Error occurred when removing network %v", err)
 				}
 
-				_, err := daemon.netController.NewNetwork("nat", name, id,
+				_, err := daemon.netController.NewNetwork(context.TODO(), "nat", name, id,
 					libnetwork.NetworkOptionGeneric(options.Generic{
 						netlabel.GenericData: netOption,
 					}),
@@ -301,7 +301,7 @@ func (daemon *Daemon) initNetworkController(daemonCfg *config.Config, activeSand
 		}
 	}
 
-	_, err = daemon.netController.NewNetwork("null", "none", "", libnetwork.NetworkOptionPersist(false))
+	_, err = daemon.netController.NewNetwork(context.TODO(), "null", "none", "", libnetwork.NetworkOptionPersist(false))
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func (daemon *Daemon) initNetworkController(daemonCfg *config.Config, activeSand
 		}
 
 		v6Conf := []*libnetwork.IpamConf{}
-		_, err := daemon.netController.NewNetwork(strings.ToLower(v.Type), name, nid,
+		_, err := daemon.netController.NewNetwork(context.TODO(), strings.ToLower(v.Type), name, nid,
 			libnetwork.NetworkOptionGeneric(options.Generic{
 				netlabel.GenericData: netOption,
 				netlabel.EnableIPv4:  true,
@@ -430,7 +430,7 @@ func initBridgeDriver(controller *libnetwork.Controller, config config.BridgeCon
 		ipamOption = libnetwork.NetworkOptionIpam("default", "", v4Conf, v6Conf, nil)
 	}
 
-	_, err := controller.NewNetwork(network.DefaultNetwork, network.DefaultNetwork, "",
+	_, err := controller.NewNetwork(context.TODO(), network.DefaultNetwork, network.DefaultNetwork, "",
 		libnetwork.NetworkOptionGeneric(options.Generic{
 			netlabel.GenericData: netOption,
 			netlabel.EnableIPv4:  true,
@@ -462,11 +462,11 @@ func recursiveUnmount(_ string) error {
 	return nil
 }
 
-func setupRemappedRoot(config *config.Config) (idtools.IdentityMapping, error) {
-	return idtools.IdentityMapping{}, nil
+func setupRemappedRoot(config *config.Config) (user.IdentityMapping, error) {
+	return user.IdentityMapping{}, nil
 }
 
-func setupDaemonRoot(config *config.Config, rootDir string, rootIdentity idtools.Identity) error {
+func setupDaemonRoot(config *config.Config, rootDir string, uid, gid int) error {
 	config.Root = rootDir
 	// Create the root directory if it doesn't exists
 	if err := system.MkdirAllWithACL(config.Root, 0, system.SddlAdministratorsLocalSystem); err != nil {
@@ -567,13 +567,7 @@ func (daemon *Daemon) initLibcontainerd(ctx context.Context, cfg *config.Config)
 
 	switch rt {
 	case config.WindowsV1RuntimeName:
-		daemon.containerd, err = local.NewClient(
-			ctx,
-			daemon.containerdClient,
-			filepath.Join(cfg.ExecRoot, "containerd"),
-			cfg.ContainerdNamespace,
-			daemon,
-		)
+		daemon.containerd, err = local.NewClient(ctx, daemon)
 	case config.WindowsV2RuntimeName:
 		if cfg.ContainerdAddr == "" {
 			return fmt.Errorf("cannot use the specified runtime %q without containerd", rt)

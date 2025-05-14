@@ -113,7 +113,7 @@ func NewSandbox(key string, osCreate, isRestore bool) (*Namespace, error) {
 		once.Do(createBasePath)
 	}
 
-	n := &Namespace{path: key, isDefault: !osCreate, nextIfIndex: make(map[string]int)}
+	n := &Namespace{path: key, isDefault: !osCreate}
 
 	sboxNs, err := netns.GetFromPath(n.path)
 	if err != nil {
@@ -156,7 +156,7 @@ func GetSandboxForExternalKey(basePath string, key string) (*Namespace, error) {
 	if err := mountNetworkNamespace(basePath, key); err != nil {
 		return nil, err
 	}
-	n := &Namespace{path: key, nextIfIndex: make(map[string]int)}
+	n := &Namespace{path: key}
 
 	sboxNs, err := netns.GetFromPath(n.path)
 	if err != nil {
@@ -225,7 +225,7 @@ func createNamespaceFile(path string) error {
 // or sets the gateway etc. It holds a list of Interfaces, routes etc., and more
 // can be added dynamically.
 type Namespace struct {
-	path                string
+	path                string // path is the absolute path to the network namespace. It is safe to access it concurrently.
 	iFaces              []*Interface
 	gw                  net.IP
 	gwv6                net.IP
@@ -233,11 +233,10 @@ type Namespace struct {
 	defRoute6SrcName    string
 	staticRoutes        []*types.StaticRoute
 	neighbors           []*neigh
-	nextIfIndex         map[string]int
-	isDefault           bool
+	isDefault           bool // isDefault is true when Namespace represents the host network namespace. It is safe to access it concurrently.
 	ipv6LoEnabledOnce   sync.Once
 	ipv6LoEnabledCached bool
-	nlHandle            nlwrap.Handle
+	nlHandle            nlwrap.Handle // nlHandle is the netlink handle for the network namespace. It is safe to access it concurrently.
 	mu                  sync.Mutex
 }
 
@@ -295,7 +294,7 @@ func (n *Namespace) RemoveAliasIP(ifName string, ip *net.IPNet) error {
 
 // DisableARPForVIP disables ARP replies and requests for VIP addresses
 // on a particular interface.
-func (n *Namespace) DisableARPForVIP(srcName string) (Err error) {
+func (n *Namespace) DisableARPForVIP(srcName string) (retErr error) {
 	dstName := ""
 	for _, i := range n.Interfaces() {
 		if i.SrcName() == srcName {
@@ -310,19 +309,19 @@ func (n *Namespace) DisableARPForVIP(srcName string) (Err error) {
 	err := n.InvokeFunc(func() {
 		path := filepath.Join("/proc/sys/net/ipv4/conf", dstName, "arp_ignore")
 		if err := os.WriteFile(path, []byte{'1', '\n'}, 0o644); err != nil {
-			Err = fmt.Errorf("Failed to set %s to 1: %v", path, err)
+			retErr = fmt.Errorf("Failed to set %s to 1: %v", path, err)
 			return
 		}
 		path = filepath.Join("/proc/sys/net/ipv4/conf", dstName, "arp_announce")
 		if err := os.WriteFile(path, []byte{'2', '\n'}, 0o644); err != nil {
-			Err = fmt.Errorf("Failed to set %s to 2: %v", path, err)
+			retErr = fmt.Errorf("Failed to set %s to 2: %v", path, err)
 			return
 		}
 	})
 	if err != nil {
 		return err
 	}
-	return
+	return retErr
 }
 
 // InvokeFunc invoke a function in the network namespace.
@@ -402,7 +401,7 @@ func (n *Namespace) Destroy() error {
 func (n *Namespace) RestoreInterfaces(interfaces map[Iface][]IfaceOption) error {
 	// restore interfaces
 	for iface, opts := range interfaces {
-		i, err := newInterface(n, iface.SrcName, iface.DstPrefix, opts...)
+		i, err := newInterface(n, iface.SrcName, iface.DstPrefix, iface.DstName, opts...)
 		if err != nil {
 			return err
 		}
@@ -417,7 +416,7 @@ func (n *Namespace) RestoreInterfaces(interfaces map[Iface][]IfaceOption) error 
 			// restore from the namespace
 			for _, link := range links {
 				ifaceName := link.Attrs().Name
-				if i.dstName == "vxlan" && strings.HasPrefix(ifaceName, "vxlan") {
+				if i.dstPrefix == "vxlan" && strings.HasPrefix(ifaceName, "vxlan") {
 					i.dstName = ifaceName
 					break
 				}
@@ -451,23 +450,12 @@ func (n *Namespace) RestoreInterfaces(interfaces map[Iface][]IfaceOption) error 
 					}
 				}
 				// This is to find the interface name of the pair in overlay sandbox
-				if i.master != "" && i.dstName == "veth" && strings.HasPrefix(ifaceName, "veth") {
+				if i.master != "" && i.dstPrefix == "veth" && strings.HasPrefix(ifaceName, "veth") {
 					i.dstName = ifaceName
 				}
 			}
 
-			var index int
-			if idx := strings.TrimPrefix(i.dstName, iface.DstPrefix); idx != "" {
-				index, err = strconv.Atoi(idx)
-				if err != nil {
-					return fmt.Errorf("failed to restore interface in network namespace %q: invalid dstName for interface: %s: %v", n.path, i.dstName, err)
-				}
-			}
-			index++
 			n.mu.Lock()
-			if index > n.nextIfIndex[iface.DstPrefix] {
-				n.nextIfIndex[iface.DstPrefix] = index
-			}
 			n.iFaces = append(n.iFaces, i)
 			n.mu.Unlock()
 		}

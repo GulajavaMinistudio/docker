@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.22
+//go:build go1.23
 
 package libnetwork
 
@@ -17,6 +17,7 @@ import (
 
 	"github.com/containerd/log"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/internal/sliceutil"
 	"github.com/docker/docker/libnetwork/datastore"
 	"github.com/docker/docker/libnetwork/driverapi"
 	"github.com/docker/docker/libnetwork/internal/netiputil"
@@ -132,7 +133,7 @@ type IpamInfo struct {
 
 // MarshalJSON encodes IpamInfo into json message
 func (i *IpamInfo) MarshalJSON() ([]byte, error) {
-	m := map[string]interface{}{
+	m := map[string]any{
 		"PoolID": i.PoolID,
 	}
 	v, err := json.Marshal(&i.IPAMData)
@@ -150,7 +151,7 @@ func (i *IpamInfo) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON decodes json message into PoolData
 func (i *IpamInfo) UnmarshalJSON(data []byte) error {
 	var (
-		m   map[string]interface{}
+		m   map[string]any
 		err error
 	)
 	if err = json.Unmarshal(data, &m); err != nil {
@@ -158,7 +159,7 @@ func (i *IpamInfo) UnmarshalJSON(data []byte) error {
 	}
 	i.PoolID = m["PoolID"].(string)
 	if v, ok := m["Meta"]; ok {
-		b, _ := json.Marshal(v)
+		b, _ := json.Marshal(v) //nolint:errchkjson // FIXME: handle json (Un)Marshal errors
 		if err = json.Unmarshal(b, &i.Meta); err != nil {
 			return err
 		}
@@ -190,7 +191,6 @@ type Network struct {
 	ipamV6Info       []*IpamInfo
 	enableIPv4       bool
 	enableIPv6       bool
-	epCnt            *endpointCnt
 	generic          options.Generic
 	dbIndex          uint64
 	dbExists         bool
@@ -373,9 +373,12 @@ func (n *Network) validateConfiguration() error {
 		if n.configOnly {
 			return types.ForbiddenErrorf("a configuration network cannot depend on another configuration network")
 		}
+		// Check that no config has been set for this --config-from network.
+		// (Note that the default for enableIPv4 is 'true', ipamType has its own default,
+		// and other settings are zero valued by default.)
 		if n.ipamType != "" &&
 			n.ipamType != defaultIpamForNetworkType(n.networkType) ||
-			n.enableIPv4 || n.enableIPv6 ||
+			!n.enableIPv4 || n.enableIPv6 ||
 			len(n.labels) > 0 || len(n.ipamOptions) > 0 ||
 			len(n.ipamV4Config) > 0 || len(n.ipamV6Config) > 0 {
 			return types.ForbiddenErrorf("user specified configurations are not supported if the network depends on a configuration network")
@@ -384,10 +387,10 @@ func (n *Network) validateConfiguration() error {
 			if data, ok := n.generic[netlabel.GenericData]; ok {
 				var (
 					driverOptions map[string]string
-					opts          interface{}
+					opts          any
 				)
 				switch t := data.(type) {
-				case map[string]interface{}, map[string]string:
+				case map[string]any, map[string]string:
 					opts = t
 				}
 				ba, err := json.Marshal(opts)
@@ -443,6 +446,15 @@ func (n *Network) applyConfigurationTo(to *Network) error {
 			to.generic[k] = v
 		}
 	}
+
+	// Network drivers only see generic flags. So, make sure they match.
+	if to.generic == nil {
+		to.generic = options.Generic{}
+	}
+	to.generic[netlabel.Internal] = to.internal
+	to.generic[netlabel.EnableIPv4] = to.enableIPv4
+	to.generic[netlabel.EnableIPv6] = to.enableIPv6
+
 	return nil
 }
 
@@ -530,13 +542,6 @@ func (n *Network) CopyTo(o datastore.KVObject) error {
 	return nil
 }
 
-func (n *Network) getEpCnt() *endpointCnt {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	return n.epCnt
-}
-
 func (n *Network) validateAdvertiseAddrConfig() error {
 	var errs []error
 	_, err := n.validatedAdvertiseAddrNMsgs()
@@ -568,7 +573,7 @@ func (n *Network) advertiseAddrInterval() (time.Duration, bool) {
 
 // TODO : Can be made much more generic with the help of reflection (but has some golang limitations)
 func (n *Network) MarshalJSON() ([]byte, error) {
-	netMap := make(map[string]interface{})
+	netMap := make(map[string]any)
 	netMap["name"] = n.name
 	netMap["id"] = n.id
 	netMap["created"] = n.created
@@ -627,7 +632,7 @@ func (n *Network) MarshalJSON() ([]byte, error) {
 
 // TODO : Can be made much more generic with the help of reflection (but has some golang limitations)
 func (n *Network) UnmarshalJSON(b []byte) (err error) {
-	var netMap map[string]interface{}
+	var netMap map[string]any
 	if err := json.Unmarshal(b, &netMap); err != nil {
 		return err
 	}
@@ -642,17 +647,15 @@ func (n *Network) UnmarshalJSON(b []byte) (err error) {
 		}
 	}
 	n.networkType = netMap["networkType"].(string)
+	n.enableIPv4 = true // Default for networks created before the option to disable IPv4 was added.
 	if v, ok := netMap["enableIPv4"]; ok {
 		n.enableIPv4 = v.(bool)
-	} else {
-		// Set enableIPv4 for IPv4 networks created before the option was added.
-		_, n.enableIPv4 = netMap["ipamV4Info"]
 	}
 	n.enableIPv6 = netMap["enableIPv6"].(bool)
 
 	// if we weren't unmarshaling to netMap we could simply set n.labels
 	// unfortunately, we can't because map[string]interface{} != map[string]string
-	if labels, ok := netMap["labels"].(map[string]interface{}); ok {
+	if labels, ok := netMap["labels"].(map[string]any); ok {
 		n.labels = make(map[string]string, len(labels))
 		for label, value := range labels {
 			n.labels[label] = value.(string)
@@ -660,7 +663,7 @@ func (n *Network) UnmarshalJSON(b []byte) (err error) {
 	}
 
 	if v, ok := netMap["ipamOptions"]; ok {
-		if iOpts, ok := v.(map[string]interface{}); ok {
+		if iOpts, ok := v.(map[string]any); ok {
 			n.ipamOptions = make(map[string]string, len(iOpts))
 			for k, v := range iOpts {
 				n.ipamOptions[k] = v.(string)
@@ -669,11 +672,11 @@ func (n *Network) UnmarshalJSON(b []byte) (err error) {
 	}
 
 	if v, ok := netMap["generic"]; ok {
-		n.generic = v.(map[string]interface{})
+		n.generic = v.(map[string]any)
 		// Restore opts in their map[string]string form
-		if v, ok := n.generic[netlabel.GenericData]; ok {
+		if gv, ok := n.generic[netlabel.GenericData]; ok {
 			var lmap map[string]string
-			ba, err := json.Marshal(v)
+			ba, err := json.Marshal(gv)
 			if err != nil {
 				return err
 			}
@@ -758,10 +761,10 @@ type NetworkOption func(n *Network)
 
 // NetworkOptionGeneric function returns an option setter for a Generic option defined
 // in a Dictionary of Key-Value pair
-func NetworkOptionGeneric(generic map[string]interface{}) NetworkOption {
+func NetworkOptionGeneric(generic map[string]any) NetworkOption {
 	return func(n *Network) {
 		if n.generic == nil {
-			n.generic = make(map[string]interface{})
+			n.generic = make(map[string]any)
 		}
 		if val, ok := generic[netlabel.EnableIPv4]; ok {
 			n.enableIPv4 = val.(bool)
@@ -797,7 +800,7 @@ func NetworkOptionPersist(persist bool) NetworkOption {
 func NetworkOptionEnableIPv4(enableIPv4 bool) NetworkOption {
 	return func(n *Network) {
 		if n.generic == nil {
-			n.generic = make(map[string]interface{})
+			n.generic = make(map[string]any)
 		}
 		n.enableIPv4 = enableIPv4
 		n.generic[netlabel.EnableIPv4] = enableIPv4
@@ -808,7 +811,7 @@ func NetworkOptionEnableIPv4(enableIPv4 bool) NetworkOption {
 func NetworkOptionEnableIPv6(enableIPv6 bool) NetworkOption {
 	return func(n *Network) {
 		if n.generic == nil {
-			n.generic = make(map[string]interface{})
+			n.generic = make(map[string]any)
 		}
 		n.enableIPv6 = enableIPv6
 		n.generic[netlabel.EnableIPv6] = enableIPv6
@@ -820,7 +823,7 @@ func NetworkOptionEnableIPv6(enableIPv6 bool) NetworkOption {
 func NetworkOptionInternalNetwork() NetworkOption {
 	return func(n *Network) {
 		if n.generic == nil {
-			n.generic = make(map[string]interface{})
+			n.generic = make(map[string]any)
 		}
 		n.internal = true
 		n.generic[netlabel.Internal] = true
@@ -869,7 +872,7 @@ func NetworkOptionLBEndpoint(ip net.IP) NetworkOption {
 func NetworkOptionDriverOpts(opts map[string]string) NetworkOption {
 	return func(n *Network) {
 		if n.generic == nil {
-			n.generic = make(map[string]interface{})
+			n.generic = make(map[string]any)
 		}
 		if opts == nil {
 			opts = make(map[string]string)
@@ -1030,16 +1033,27 @@ func (n *Network) delete(force bool, rmLBEndpoint bool) error {
 		return &ActiveEndpointsError{name: n.name, id: n.id}
 	}
 
+	if !force && n.configOnly {
+		refNws := c.findNetworks(filterNetworkByConfigFrom(n.name))
+		if len(refNws) > 0 {
+			return types.ForbiddenErrorf("configuration network %q is in use", n.Name())
+		}
+	}
+
 	// Check that the network is empty
-	var emptyCount uint64
+	var emptyCount int
 	if n.hasLoadBalancerEndpoint() {
 		emptyCount = 1
 	}
-	if !force && n.getEpCnt().EndpointCnt() > emptyCount {
-		if n.configOnly {
-			return types.ForbiddenErrorf("configuration network %q is in use", n.Name())
+	eps := c.findEndpoints(filterEndpointByNetworkId(n.id))
+	if !force && len(eps) > emptyCount {
+		return &ActiveEndpointsError{
+			name: n.name,
+			id:   n.id,
+			endpoints: sliceutil.Map(eps, func(ep *Endpoint) string {
+				return fmt.Sprintf(`name:"%s" id:"%s"`, ep.name, stringid.TruncateID(ep.id))
+			}),
 		}
-		return &ActiveEndpointsError{name: n.name, id: n.id}
 	}
 
 	if n.hasLoadBalancerEndpoint() {
@@ -1052,11 +1066,6 @@ func (n *Network) delete(force bool, rmLBEndpoint bool) error {
 			// continue deletion when force is true even on error
 			log.G(context.TODO()).Warnf("Error deleting load balancer sandbox: %v", err)
 		}
-		// Reload the network from the store to update the epcnt.
-		n, err = c.getNetworkFromStore(id)
-		if err != nil {
-			return errdefs.NotFound(fmt.Errorf("unknown network %s id %s", name, id))
-		}
 	}
 
 	// Up to this point, errors that we returned were recoverable.
@@ -1066,19 +1075,8 @@ func (n *Network) delete(force bool, rmLBEndpoint bool) error {
 
 	// Mark the network for deletion
 	n.inDelete = true
-	if err = c.updateToStore(context.TODO(), n); err != nil {
+	if err = c.storeNetwork(context.TODO(), n); err != nil {
 		return fmt.Errorf("error marking network %s (%s) for deletion: %v", n.Name(), n.ID(), err)
-	}
-
-	if n.ConfigFrom() != "" {
-		if t, err := c.getConfigNetwork(n.ConfigFrom()); err == nil {
-			if err := t.getEpCnt().DecEndpointCnt(); err != nil {
-				log.G(context.TODO()).Warnf("Failed to update reference count for configuration network %q on removal of network %q: %v",
-					t.Name(), n.Name(), err)
-			}
-		} else {
-			log.G(context.TODO()).Warnf("Could not find configuration network %q during removal of network %q", n.configFrom, n.Name())
-		}
 	}
 
 	if n.configOnly {
@@ -1120,14 +1118,18 @@ removeFromStore:
 	// deleteFromStore performs an atomic delete operation and the
 	// Network.epCnt will help prevent any possible
 	// race between endpoint join and network delete
-	if err = c.deleteFromStore(n.getEpCnt()); err != nil {
-		if !force {
-			return fmt.Errorf("error deleting network endpoint count from store: %v", err)
-		}
+	//
+	// TODO(robmry) - remove this once downgrade past 28.1.0 is no longer supported.
+	// The endpoint count is no longer used, it's created in the store to make
+	// downgrade work, versions older than 28.1.0 expect to read it and error if they
+	// can't. The stored count is not maintained, so the downgraded version will
+	// always find it's zero (which is usually correct because the daemon had
+	// stopped), but older daemons fix it on startup anyway.
+	if err = c.deleteFromStore(&endpointCnt{n: n}); err != nil {
 		log.G(context.TODO()).Debugf("Error deleting endpoint count from store for stale network %s (%s) for deletion: %v", n.Name(), n.ID(), err)
 	}
 
-	if err = c.deleteFromStore(n); err != nil {
+	if err = c.deleteStoredNetwork(n); err != nil {
 		return fmt.Errorf("error deleting network from store: %v", err)
 	}
 
@@ -1197,7 +1199,7 @@ func (n *Network) CreateEndpoint(ctx context.Context, name string, options ...En
 func (n *Network) createEndpoint(ctx context.Context, name string, options ...EndpointOption) (*Endpoint, error) {
 	var err error
 
-	ep := &Endpoint{name: name, generic: make(map[string]interface{}), iface: &EndpointInterface{}}
+	ep := &Endpoint{name: name, generic: make(map[string]any), iface: &EndpointInterface{}}
 	ep.id = stringid.GenerateRandomID()
 
 	// Initialize ep.network with a possibly stale copy of n. We need this to get network from
@@ -1261,14 +1263,14 @@ func (n *Network) createEndpoint(ctx context.Context, name string, options ...En
 		}
 	}()
 
-	// We should perform updateToStore call right after addEndpoint
+	// We should perform storeEndpoint call right after addEndpoint
 	// in order to have iface properly configured
-	if err = n.getController().updateToStore(ctx, ep); err != nil {
+	if err = n.getController().storeEndpoint(ctx, ep); err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			if e := n.getController().deleteFromStore(ep); e != nil {
+			if e := n.getController().deleteStoredEndpoint(ep); e != nil {
 				log.G(ctx).Warnf("error rolling back endpoint %s from store: %v", name, e)
 			}
 		}
@@ -1281,11 +1283,6 @@ func (n *Network) createEndpoint(ctx context.Context, name string, options ...En
 				n.updateSvcRecord(context.WithoutCancel(ctx), ep, false)
 			}
 		}()
-	}
-
-	// Increment endpoint count to indicate completion of endpoint addition
-	if err = n.getEpCnt().IncEndpointCnt(); err != nil {
-		return nil, err
 	}
 
 	return ep, nil

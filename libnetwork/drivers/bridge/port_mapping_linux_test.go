@@ -56,7 +56,7 @@ func TestPortMappingConfig(t *testing.T) {
 	}
 
 	ipdList4 := getIPv4Data(t)
-	err := d.CreateNetwork("dummy", netOptions, nil, ipdList4, getIPv6Data(t))
+	err := d.CreateNetwork(context.Background(), "dummy", netOptions, nil, ipdList4, getIPv6Data(t))
 	if err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestPortMappingConfig(t *testing.T) {
 		t.Fatalf("Failed to create the endpoint: %s", err.Error())
 	}
 
-	if err = d.Join(context.Background(), "dummy", "ep1", "sbox", te, sbOptions); err != nil {
+	if err = d.Join(context.Background(), "dummy", "ep1", "sbox", te, nil, sbOptions); err != nil {
 		t.Fatalf("Failed to join the endpoint: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestPortMappingV6Config(t *testing.T) {
 
 	ipdList4 := getIPv4Data(t)
 	ipdList6 := getIPv6Data(t)
-	err := d.CreateNetwork("dummy", netOptions, nil, ipdList4, ipdList6)
+	err := d.CreateNetwork(context.Background(), "dummy", netOptions, nil, ipdList4, ipdList6)
 	if err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestPortMappingV6Config(t *testing.T) {
 		t.Fatalf("Failed to create the endpoint: %s", err.Error())
 	}
 
-	if err = d.Join(context.Background(), "dummy", "ep1", "sbox", te, sbOptions); err != nil {
+	if err = d.Join(context.Background(), "dummy", "ep1", "sbox", te, nil, sbOptions); err != nil {
 		t.Fatalf("Failed to join the endpoint: %v", err)
 	}
 
@@ -830,6 +830,7 @@ func TestAddPortMappings(t *testing.T) {
 					GwModeIPv4: tc.gwMode4,
 					GwModeIPv6: tc.gwMode6,
 				},
+				bridge: &bridgeInterface{},
 				driver: newDriver(storeutils.NewTempStore(t)),
 			}
 			genericOption := map[string]interface{}{
@@ -843,6 +844,10 @@ func TestAddPortMappings(t *testing.T) {
 			}
 			err := n.driver.configure(genericOption)
 			assert.NilError(t, err)
+			fwn, err := n.newFirewallerNetwork(context.Background())
+			assert.NilError(t, err)
+			assert.Check(t, fwn != nil, "no firewaller network")
+			n.firewallerNetwork = fwn
 
 			assert.Check(t, is.Equal(n.driver.portDriverClient == nil, !tc.rootless))
 			expChildIP := func(hostIP net.IP) net.IP {

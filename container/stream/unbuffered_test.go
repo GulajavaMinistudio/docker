@@ -12,7 +12,7 @@ type dummyWriter struct {
 	failOnWrite bool
 }
 
-func (dw *dummyWriter) Write(p []byte) (n int, err error) {
+func (dw *dummyWriter) Write(p []byte) (int, error) {
 	if dw.failOnWrite {
 		return 0, errors.New("Fake fail")
 	}
@@ -136,10 +136,10 @@ func BenchmarkUnbuffered(b *testing.B) {
 	testLine := "Line that thinks that it is log line from docker"
 	var buf bytes.Buffer
 	for i := 0; i < 100; i++ {
-		buf.Write([]byte(testLine + "\n"))
+		buf.WriteString(testLine + "\n")
 	}
 	// line without eol
-	buf.Write([]byte(testLine))
+	buf.WriteString(testLine)
 	testText := buf.Bytes()
 	b.SetBytes(int64(5 * len(testText)))
 	b.ResetTimer()

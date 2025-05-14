@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.22
+//go:build go1.23
 
 package daemon // import "github.com/docker/docker/daemon"
 
@@ -93,6 +93,7 @@ func (daemon *Daemon) SystemInfo(ctx context.Context) (*system.Info, error) {
 	daemon.fillSecurityOptions(v, sysInfo, &cfg.Config)
 	daemon.fillLicense(v)
 	daemon.fillDefaultAddressPools(ctx, v, &cfg.Config)
+	daemon.fillFirewallInfo(v)
 
 	return v, nil
 }
@@ -191,7 +192,7 @@ func (daemon *Daemon) fillSecurityOptions(v *system.Info, sysInfo *sysinfo.SysIn
 	if selinux.GetEnabled() {
 		securityOptions = append(securityOptions, "name=selinux")
 	}
-	if rootIDs := daemon.idMapping.RootPair(); rootIDs.UID != 0 || rootIDs.GID != 0 {
+	if uid, gid := daemon.idMapping.RootPair(); uid != 0 || gid != 0 {
 		securityOptions = append(securityOptions, "name=userns")
 	}
 	if Rootless(cfg) {
@@ -282,6 +283,13 @@ func (daemon *Daemon) fillDefaultAddressPools(ctx context.Context, v *system.Inf
 			Size: pool.Size,
 		})
 	}
+}
+
+func (daemon *Daemon) fillFirewallInfo(v *system.Info) {
+	if daemon.netController == nil {
+		return
+	}
+	v.FirewallBackend = daemon.netController.FirewallBackend()
 }
 
 func hostName(ctx context.Context) string {

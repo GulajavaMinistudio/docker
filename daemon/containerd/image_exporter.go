@@ -18,8 +18,8 @@ import (
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/daemon/images"
 	"github.com/docker/docker/errdefs"
-	dockerarchive "github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/streamformatter"
+	"github.com/moby/go-archive/compression"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
@@ -230,7 +230,7 @@ func (i *ImageService) leaseContent(ctx context.Context, store content.Store, de
 // complement of ExportImage.  The input stream is an uncompressed tar
 // ball containing images and metadata.
 func (i *ImageService) LoadImage(ctx context.Context, inTar io.ReadCloser, platform *ocispec.Platform, outStream io.Writer, quiet bool) error {
-	decompressed, err := dockerarchive.DecompressStream(inTar)
+	decompressed, err := compression.DecompressStream(inTar)
 	if err != nil {
 		return errors.Wrap(err, "failed to decompress input tar archive")
 	}
@@ -248,8 +248,21 @@ func (i *ImageService) LoadImage(ctx context.Context, inTar io.ReadCloser, platf
 			if nameFromArchive == "" {
 				return false
 			}
-			_, err := reference.ParseNormalizedNamed(nameFromArchive)
-			return err == nil
+
+			ref, err := reference.ParseNormalizedNamed(nameFromArchive)
+			if err != nil {
+				return false
+			}
+
+			// Look up if there is an existing image with this name and ensure a dangling image exists.
+			if img, err := i.images.Get(ctx, ref.String()); err == nil {
+				if err := i.ensureDanglingImage(ctx, img); err != nil {
+					log.G(ctx).WithError(err).Warnf("failed to keep the previous image for %s as dangling", img.Name)
+				}
+			} else if !errdefs.IsNotFound(err) {
+				log.G(ctx).WithError(err).Warn("failed to retrieve image: %w", err)
+			}
+			return true
 		}),
 	}
 
@@ -403,7 +416,7 @@ func (i *ImageService) verifyImagesProvidePlatform(ctx context.Context, imgs []c
 		}
 	}
 
-	msg := ""
+	var msg string
 	switch len(incompleteImgs) {
 	case 0:
 		// Success - All images provide the requested platform.

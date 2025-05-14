@@ -24,6 +24,7 @@ import (
 	n "github.com/docker/docker/integration/network"
 	"github.com/docker/docker/internal/testutils/networking"
 	"github.com/docker/docker/libnetwork/drivers/bridge"
+	"github.com/docker/docker/libnetwork/iptables"
 	"github.com/docker/docker/libnetwork/netlabel"
 	"github.com/docker/docker/testutil"
 	"github.com/docker/docker/testutil/daemon"
@@ -493,6 +494,125 @@ func TestBridgeINCRouted(t *testing.T) {
 	}
 }
 
+// TestRoutedAccessToPublishedPort checks that:
+//   - with docker-proxy enabled, a container in a gw-mode=routed network can access a port
+//     published to the host by a container in a gw-mode=nat network.
+//   - if the proxy is disabled, those packets are dropped by the network isolation rules
+//   - working around those INC rules by adding a rule to DOCKER-USER enables access to the
+//     published port (so, packets from the mode-routed network are still DNAT'd).
+//
+// Regression test for https://github.com/moby/moby/issues/49509
+func TestRoutedAccessToPublishedPort(t *testing.T) {
+	skip.If(t, testEnv.IsRootless, "Published port not accessible from rootless netns")
+
+	ctx := setupTest(t)
+
+	testcases := []struct {
+		name          string
+		userlandProxy bool
+		skipINC       bool
+		expResponse   bool
+	}{
+		{
+			name:          "proxy=true/skipICC=false",
+			userlandProxy: true,
+			expResponse:   true,
+		},
+		{
+			name: "proxy=false/skipICC=false",
+		},
+		{
+			name:        "proxy=false/skipICC=true",
+			skipINC:     true,
+			expResponse: true,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := daemon.New(t)
+			d.StartWithBusybox(ctx, t, "--ipv6", "--userland-proxy="+strconv.FormatBool(tc.userlandProxy))
+			defer d.Stop(t)
+
+			c := d.NewClientT(t)
+			defer c.Close()
+
+			const natNetName = "tnet-nat"
+			const natBridgeName = "br-nat"
+			network.CreateNoError(ctx, t, c, natNetName,
+				network.WithDriver("bridge"),
+				network.WithIPv6(),
+				network.WithOption(bridge.BridgeName, natBridgeName),
+			)
+			defer network.RemoveNoError(ctx, t, c, natNetName)
+
+			ctrId := container.Run(ctx, t, c,
+				container.WithNetworkMode(natNetName),
+				container.WithName("ctr-nat"),
+				container.WithExposedPorts("80/tcp"),
+				container.WithPortMap(nat.PortMap{"80/tcp": {nat.PortBinding{HostPort: "8080"}}}),
+				container.WithCmd("httpd", "-f"),
+			)
+			defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+
+			const routedNetName = "tnet-routed"
+			network.CreateNoError(ctx, t, c, routedNetName,
+				network.WithDriver("bridge"),
+				network.WithIPv6(),
+				network.WithOption(bridge.BridgeName, "br-routed"),
+				network.WithOption(bridge.IPv4GatewayMode, "routed"),
+				network.WithOption(bridge.IPv6GatewayMode, "routed"),
+			)
+			defer network.RemoveNoError(ctx, t, c, routedNetName)
+
+			// With docker-proxy disabled, a container can't normally access a port published
+			// from a container in a different bridge network. But, users can add rules to
+			// the DOCKER-USER chain to get around that limitation of docker's iptables rules.
+			// Do that here, if the test requires it.
+			if tc.skipINC {
+				for _, ipv := range []iptables.IPVersion{iptables.IPv4, iptables.IPv6} {
+					rule := iptables.Rule{
+						IPVer: ipv, Table: iptables.Filter, Chain: "DOCKER-USER",
+						Args: []string{"-o", natBridgeName, "-j", "ACCEPT"},
+					}
+					err := rule.Insert()
+					assert.NilError(t, err)
+					defer func() {
+						if err := rule.Delete(); err != nil {
+							t.Errorf("Failed to delete %s DOCKER-USER rule: %v", ipv, err)
+						}
+					}()
+				}
+			}
+
+			// Use the default bridge addresses as host addresses (like "host-gateway", but
+			// there's no way to tell wget to prefer ipv4/ipv6 transport, so just use the
+			// addresses directly).
+			insp, err := c.NetworkInspect(ctx, "bridge", networktypes.InspectOptions{})
+			assert.NilError(t, err)
+			for _, ipamCfg := range insp.IPAM.Config {
+				ipv := "ipv4"
+				if strings.Contains(ipamCfg.Gateway, ":") {
+					ipv = "ipv6"
+				}
+				t.Run(ipv, func(t *testing.T) {
+					url := "http://" + net.JoinHostPort(ipamCfg.Gateway, "8080")
+					res := container.RunAttach(ctx, t, c,
+						container.WithNetworkMode(routedNetName),
+						container.WithCmd("wget", "-O-", "-T3", url),
+					)
+					if tc.expResponse {
+						// 404 Not Found means the server responded, but it's got nothing to serve.
+						assert.Check(t, is.Contains(res.Stderr.String(), "404 Not Found"), "url: %s", url)
+					} else {
+						assert.Check(t, is.Contains(res.Stderr.String(), "download timed out"), "url: %s", url)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestDefaultBridgeIPv6(t *testing.T) {
 	ctx := setupTest(t)
 
@@ -505,7 +625,7 @@ func TestDefaultBridgeIPv6(t *testing.T) {
 		},
 		{
 			name:          "IPv6 ULA",
-			fixed_cidr_v6: "fd00:1234::/64",
+			fixed_cidr_v6: "fd00:1235::/64",
 		},
 		{
 			name:          "IPv6 LLA only",
@@ -513,7 +633,7 @@ func TestDefaultBridgeIPv6(t *testing.T) {
 		},
 		{
 			name:          "IPv6 nonstandard LLA only",
-			fixed_cidr_v6: "fe80:1234::/64",
+			fixed_cidr_v6: "fe80:1236::/64",
 		},
 	}
 
@@ -611,16 +731,16 @@ func TestDefaultBridgeAddresses(t *testing.T) {
 					// Modify that prefix, the default bridge's address must be deleted and re-added.
 					// The bridge must still have an address in the required (standard) LL subnet.
 					stepName:    "Nonstandard LL prefix - address change",
-					fixedCIDRV6: "fe80:1234::/32",
-					expAddrs:    []string{"fe80:1234::1/32", "fe80::"},
+					fixedCIDRV6: "fe80:1237::/32",
+					expAddrs:    []string{"fe80:1237::1/32", "fe80::"},
 				},
 				{
 					// Modify the prefix length, the addresses should not change.
 					stepName:    "Modify LL prefix - no address change",
-					fixedCIDRV6: "fe80:1234::/64",
+					fixedCIDRV6: "fe80:1238::/64",
 					// The prefix length displayed by 'ip a' is not updated - it's informational, and
 					// can't be changed without unnecessarily deleting and re-adding the address.
-					expAddrs: []string{"fe80:1234::1/", "fe80::"},
+					expAddrs: []string{"fe80:1238::1/", "fe80::"},
 				},
 			},
 		},
@@ -1222,7 +1342,7 @@ func checkProxies(ctx context.Context, t *testing.T, c *client.Client, daemonPid
 		return fmt.Sprintf("%s:%s/%s <-> %s:%s", hostIP, hostPort, proto, ctrIP, ctrPort)
 	}
 
-	wantProxies := make([]string, len(exp))
+	wantProxies := make([]string, 0, len(exp))
 	for _, e := range exp {
 		inspect := container.Inspect(ctx, t, c, e.ctrName)
 		nw := inspect.NetworkSettings.Networks[e.ctrNetName]
@@ -1233,7 +1353,7 @@ func checkProxies(ctx context.Context, t *testing.T, c *client.Client, daemonPid
 		wantProxies = append(wantProxies, makeExpStr(e.proto, e.hostIP, e.hostPort, ctrIP, e.ctrPort))
 	}
 
-	gotProxies := make([]string, len(exp))
+	gotProxies := make([]string, 0, len(exp))
 	res, err := exec.Command("ps", "-f", "--ppid", strconv.Itoa(daemonPid)).CombinedOutput()
 	assert.NilError(t, err)
 	for _, line := range strings.Split(string(res), "\n") {
@@ -1380,7 +1500,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 				network.WithIPAM("172.22.22.0/24", "172.22.22.1"),
 			}, tc.netOpts...)
 			if tc.ipv6LinkLocal {
-				netOpts = append(netOpts, network.WithIPAM("fe80:1234::/64", "fe80:1234::1"))
+				netOpts = append(netOpts, network.WithIPAM("fe80:1240::/64", "fe80:1240::1"))
 			} else {
 				netOpts = append(netOpts, network.WithIPAM("fd3c:e70a:962c::/64", "fd3c:e70a:962c::1"))
 			}
@@ -1403,7 +1523,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			const ctr2Addr4 = "172.22.22.22"
 			ctr2Addr6 := "fd3c:e70a:962c::2222"
 			if tc.ipv6LinkLocal {
-				ctr2Addr6 = "fe80:1234::2222"
+				ctr2Addr6 = "fe80:1240::2222"
 			}
 			ctr2Id := container.Run(ctx, t, c,
 				container.WithName(ctr2Name),
@@ -1541,4 +1661,86 @@ func TestAdvertiseAddresses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNetworkInspectGateway checks that gateways reported in inspect output are parseable as addresses.
+func TestNetworkInspectGateway(t *testing.T) {
+	ctx := setupTest(t)
+	c := testEnv.APIClient()
+
+	const netName = "test-inspgw"
+	nid, err := network.Create(ctx, c, netName, network.WithIPv6())
+	assert.NilError(t, err)
+	defer network.RemoveNoError(ctx, t, c, netName)
+
+	insp, err := c.NetworkInspect(ctx, nid, networktypes.InspectOptions{})
+	assert.NilError(t, err)
+	for _, ipamCfg := range insp.IPAM.Config {
+		_, err := netip.ParseAddr(ipamCfg.Gateway)
+		assert.Check(t, err)
+	}
+}
+
+// TestDropInForwardChain checks that a DROP rule appended to the filter-FORWARD chain
+// by some other application is processed after docker's rules (so, it doesn't break docker's
+// networking).
+// Regression test for https://github.com/moby/moby/pull/49518
+func TestDropInForwardChain(t *testing.T) {
+	skip.If(t, networking.FirewalldRunning(), "can't use firewalld in host netns to add rules in L3Segment")
+	skip.If(t, testEnv.IsRootless, "rootless has its own netns")
+
+	// Run the test in its own netns, to avoid interfering with iptables on the test host.
+	const l3SegHost = "difc"
+	l3 := networking.NewL3Segment(t, "test-"+l3SegHost)
+	defer l3.Destroy(t)
+	hostAddrs := []netip.Prefix{
+		netip.MustParsePrefix("192.168.111.222/24"),
+		netip.MustParsePrefix("fdeb:6de4:e407::111/64"),
+	}
+	l3.AddHost(t, l3SegHost, "ns-"+l3SegHost, "eth0", hostAddrs...)
+
+	// Insert DROP rules at the end of the FORWARD chain. If these end up out-of-order, packets
+	// will be dropped before Docker's rules can accept them.
+	l3.Hosts[l3SegHost].Do(t, func() {
+		dropRule := []string{"-A", "FORWARD", "-j", "DROP", "-m", "comment", "--comment", "test drop rule"}
+		out, err := iptables.GetIptable(iptables.IPv4).Raw(dropRule...)
+		assert.NilError(t, err, "adding drop rule: %s", out)
+		out, err = iptables.GetIptable(iptables.IPv6).Raw(dropRule...)
+		assert.NilError(t, err, "adding drop rule: %s", out)
+
+		// Run without OTEL because there's no routing from this netns for it - which
+		// means the daemon doesn't shut down cleanly, causing the test to fail.
+		ctx := setupTest(t)
+		d := daemon.New(t, daemon.WithEnvVars("OTEL_EXPORTER_OTLP_ENDPOINT="))
+		// Disable docker-proxy, so the iptables rules aren't bypassed.
+		d.StartWithBusybox(ctx, t, "--userland-proxy=false")
+		defer d.Stop(t)
+		c := d.NewClientT(t)
+		defer c.Close()
+
+		const netName46 = "net46"
+		_ = network.CreateNoError(ctx, t, c, netName46, network.WithIPv6())
+		defer network.RemoveNoError(ctx, t, c, netName46)
+
+		// Start an http server.
+		const hostPort = "8080"
+		ctrId := container.Run(ctx, t, c,
+			container.WithNetworkMode(netName46),
+			container.WithExposedPorts("80"),
+			container.WithPortMap(nat.PortMap{"80": {{HostPort: hostPort}}}),
+			container.WithCmd("httpd", "-f"),
+		)
+		defer c.ContainerRemove(ctx, ctrId, containertypes.RemoveOptions{Force: true})
+
+		// Make an HTTP request from a new container, via the published port on the host addresses.
+		// Expect a "404", not a timeout due to packets dropped by the FORWARD chain's extra rule.
+		for _, ha := range hostAddrs {
+			url := "http://" + net.JoinHostPort(ha.Addr().String(), hostPort)
+			res := container.RunAttach(ctx, t, c,
+				container.WithNetworkMode(netName46),
+				container.WithCmd("wget", "-T3", url),
+			)
+			assert.Check(t, is.Contains(res.Stderr.String(), "404 Not Found"), "URL: %s", url)
+		}
+	})
 }

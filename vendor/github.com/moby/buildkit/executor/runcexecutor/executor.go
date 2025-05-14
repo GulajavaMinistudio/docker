@@ -23,17 +23,18 @@ import (
 	containerdoci "github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/continuity/fs"
 	runc "github.com/containerd/go-runc"
-	"github.com/docker/docker/pkg/idtools"
 	"github.com/moby/buildkit/executor"
 	"github.com/moby/buildkit/executor/oci"
 	"github.com/moby/buildkit/executor/resources"
 	resourcestypes "github.com/moby/buildkit/executor/resources/types"
 	gatewayapi "github.com/moby/buildkit/frontend/gateway/pb"
 	"github.com/moby/buildkit/identity"
+	"github.com/moby/buildkit/solver/llbsolver/cdidevices"
 	"github.com/moby/buildkit/solver/pb"
 	"github.com/moby/buildkit/util/network"
 	rootlessspecconv "github.com/moby/buildkit/util/rootless/specconv"
 	"github.com/moby/buildkit/util/stack"
+	"github.com/moby/sys/user"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 )
@@ -48,7 +49,7 @@ type Opt struct {
 	DefaultCgroupParent string
 	// ProcessMode
 	ProcessMode     oci.ProcessMode
-	IdentityMapping *idtools.IdentityMapping
+	IdentityMapping *user.IdentityMapping
 	// runc run --no-pivot (unrecommended)
 	NoPivot         bool
 	DNS             *oci.DNSConfig
@@ -57,6 +58,7 @@ type Opt struct {
 	SELinux         bool
 	TracingSocket   string
 	ResourceMonitor *resources.Monitor
+	CDIManager      *cdidevices.Manager
 }
 
 var defaultCommandCandidates = []string{"buildkit-runc", "runc"}
@@ -68,7 +70,7 @@ type runcExecutor struct {
 	rootless         bool
 	networkProviders map[pb.NetMode]network.Provider
 	processMode      oci.ProcessMode
-	idmap            *idtools.IdentityMapping
+	idmap            *user.IdentityMapping
 	noPivot          bool
 	dns              *oci.DNSConfig
 	oomScoreAdj      *int
@@ -78,6 +80,7 @@ type runcExecutor struct {
 	selinux          bool
 	tracingSocket    string
 	resmon           *resources.Monitor
+	cdiManager       *cdidevices.Manager
 }
 
 func New(opt Opt, networkProviders map[pb.NetMode]network.Provider) (executor.Executor, error) {
@@ -144,6 +147,7 @@ func New(opt Opt, networkProviders map[pb.NetMode]network.Provider) (executor.Ex
 		selinux:          opt.SELinux,
 		tracingSocket:    opt.TracingSocket,
 		resmon:           opt.ResourceMonitor,
+		cdiManager:       opt.CDIManager,
 	}
 	return w, nil
 }
@@ -223,13 +227,13 @@ func (w *runcExecutor) Run(ctx context.Context, id string, root executor.Mount, 
 	}
 	defer os.RemoveAll(bundle)
 
-	identity := idtools.Identity{}
+	var rootUID, rootGID int
 	if w.idmap != nil {
-		identity = w.idmap.RootPair()
+		rootUID, rootGID = w.idmap.RootPair()
 	}
 
 	rootFSPath := filepath.Join(bundle, "rootfs")
-	if err := idtools.MkdirAllAndChown(rootFSPath, 0o700, identity); err != nil {
+	if err := user.MkdirAllAndChown(rootFSPath, 0o700, rootUID, rootGID); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	if err := mount.All(rootMount, rootFSPath); err != nil {
@@ -256,18 +260,15 @@ func (w *runcExecutor) Run(ctx context.Context, id string, root executor.Mount, 
 		opts = append(opts, containerdoci.WithRootFSReadonly())
 	}
 
-	identity = idtools.Identity{
-		UID: int(uid),
-		GID: int(gid),
-	}
+	rootUID, rootGID = int(uid), int(gid)
 	if w.idmap != nil {
-		identity, err = w.idmap.ToHost(identity)
+		rootUID, rootGID, err = w.idmap.ToHost(rootUID, rootGID)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	spec, cleanup, err := oci.GenerateSpec(ctx, meta, mounts, id, resolvConf, hostsFile, namespace, w.cgroupParent, w.processMode, w.idmap, w.apparmorProfile, w.selinux, w.tracingSocket, opts...)
+	spec, cleanup, err := oci.GenerateSpec(ctx, meta, mounts, id, resolvConf, hostsFile, namespace, w.cgroupParent, w.processMode, w.idmap, w.apparmorProfile, w.selinux, w.tracingSocket, w.cdiManager, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +284,7 @@ func (w *runcExecutor) Run(ctx context.Context, id string, root executor.Mount, 
 		return nil, errors.Wrapf(err, "working dir %s points to invalid target", newp)
 	}
 	if _, err := os.Stat(newp); err != nil {
-		if err := idtools.MkdirAllAndChown(newp, 0o755, identity); err != nil {
+		if err := user.MkdirAllAndChown(newp, 0o755, rootUID, rootGID); err != nil {
 			return nil, errors.Wrapf(err, "failed to create working directory %s", newp)
 		}
 	}

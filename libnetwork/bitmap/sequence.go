@@ -286,15 +286,16 @@ func (h *Bitmap) validateOrdinal(ordinal uint64) error {
 
 // MarshalBinary encodes h into a binary representation.
 func (h *Bitmap) MarshalBinary() ([]byte, error) {
-	ba := make([]byte, 16)
-	binary.BigEndian.PutUint64(ba[0:], h.bits)
-	binary.BigEndian.PutUint64(ba[8:], h.unselected)
 	bm, err := h.head.toByteArray()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize head: %v", err)
 	}
-	ba = append(ba, bm...)
 
+	// Pre-allocate capacity for "bits" and "unselected" (16 bytes) and head.
+	ba := make([]byte, 0, 16+len(bm))
+	ba = binary.BigEndian.AppendUint64(ba, h.bits)
+	ba = binary.BigEndian.AppendUint64(ba, h.unselected)
+	ba = append(ba, bm...)
 	return ba, nil
 }
 
@@ -517,7 +518,8 @@ func pushReservation(bytePos, bitPos uint64, head *sequence, release bool) (_ *s
 	newSequence := &sequence{block: newBlock, count: 1}
 
 	// Insert the new sequence in the list based on block position
-	if precBlocks == 0 { // First in sequence (A)
+	switch precBlocks {
+	case 0: // First in sequence (A)
 		newSequence.next = current
 		if current == head {
 			newHead = newSequence
@@ -527,11 +529,11 @@ func pushReservation(bytePos, bitPos uint64, head *sequence, release bool) (_ *s
 		}
 		removeCurrentIfEmpty(&newHead, newSequence, current)
 		mergeSequences(previous)
-	} else if precBlocks == current.count { // Last in sequence (B)
+	case current.count: // Last in sequence (B)
 		newSequence.next = current.next
 		current.next = newSequence
 		mergeSequences(current)
-	} else { // In between the sequence (C)
+	default: // In between the sequence (C)
 		currPre := &sequence{block: current.block, count: precBlocks, next: newSequence}
 		currPost := current
 		currPost.count -= precBlocks

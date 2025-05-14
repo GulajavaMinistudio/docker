@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.22
+//go:build go1.23
 
 // Package daemon exposes the functions that occur on the host server
 // that the Docker daemon is running.
@@ -75,9 +75,10 @@ import (
 	"github.com/moby/buildkit/util/grpcerrors"
 	"github.com/moby/buildkit/util/tracing"
 	"github.com/moby/locker"
+	"github.com/moby/sys/user"
 	"github.com/moby/sys/userns"
 	"github.com/pkg/errors"
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/semaphore"
@@ -113,7 +114,7 @@ type Daemon struct {
 	sysInfoOnce       sync.Once
 	sysInfo           *sysinfo.SysInfo
 	shutdown          bool
-	idMapping         idtools.IdentityMapping
+	idMapping         user.IdentityMapping
 	PluginStore       *plugin.Store // TODO: remove
 	pluginManager     *plugin.Manager
 	linkIndex         *linkIndex
@@ -145,7 +146,7 @@ type Daemon struct {
 	// This is used for Windows which doesn't currently support running on containerd
 	// It stores metadata for the content store (used for manifest caching)
 	// This needs to be closed on daemon exit
-	mdDB *bbolt.DB
+	mdDB *bolt.DB
 
 	usesSnapshotter bool
 }
@@ -263,7 +264,7 @@ func (daemon *Daemon) restore(cfg *configStore) error {
 
 	removeContainers := make(map[string]*container.Container)
 	restartContainers := make(map[*container.Container]chan struct{})
-	activeSandboxes := make(map[string]interface{})
+	activeSandboxes := make(map[string]any)
 
 	for _, c := range containers {
 		group.Add(1)
@@ -759,7 +760,7 @@ func (daemon *Daemon) IsSwarmCompatible() error {
 
 // NewDaemon sets up everything for the daemon to be able to service
 // requests from the webserver.
-func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.Store, authzMiddleware *authorization.Middleware) (daemon *Daemon, err error) {
+func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.Store, authzMiddleware *authorization.Middleware) (_ *Daemon, retErr error) {
 	// Verify platform-specific requirements.
 	// TODO(thaJeztah): this should be called before we try to create the daemon; perhaps together with the config validation.
 	if err := checkSystem(); err != nil {
@@ -791,7 +792,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	if err != nil {
 		return nil, err
 	}
-	rootIDs := idMapping.RootPair()
+	uid, gid := idMapping.RootPair()
 
 	// set up the tmpDir to use a canonical path
 	tmp, err := prepareTempDir(config.Root)
@@ -840,7 +841,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	// Ensure the daemon is properly shutdown if there is a failure during
 	// initialization
 	defer func() {
-		if err != nil {
+		if retErr != nil {
 			// Use a fresh context here. Passed context could be cancelled.
 			if err := d.Shutdown(context.Background()); err != nil {
 				log.G(ctx).Error(err)
@@ -868,7 +869,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		return nil, fmt.Errorf("error setting default isolation mode: %v", err)
 	}
 
-	if err := configureMaxThreads(&cfgStore.Config); err != nil {
+	if err := configureMaxThreads(ctx); err != nil {
 		log.G(ctx).Warnf("Failed to configure golang's threads limit: %v", err)
 	}
 
@@ -878,10 +879,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 
 	daemonRepo := filepath.Join(cfgStore.Root, "containers")
-	if err := idtools.MkdirAllAndChown(daemonRepo, 0o710, idtools.Identity{
-		UID: idtools.CurrentIdentity().UID,
-		GID: rootIDs.GID,
-	}); err != nil {
+	if err := user.MkdirAllAndChown(daemonRepo, 0o710, os.Getuid(), gid); err != nil {
 		return nil, err
 	}
 
@@ -901,13 +899,17 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		return nil, err
 	}
 
+	const connTimeout = 60 * time.Second
+
 	// Set the max backoff delay to match our containerd.WithTimeout(),
 	// aligning with how containerd client's defaults sets this;
 	// https://github.com/containerd/containerd/blob/v2.0.2/client/client.go#L129-L136
 	backoffConfig := backoff.DefaultConfig
-	backoffConfig.MaxDelay = 60 * time.Second
+	backoffConfig.MaxDelay = connTimeout
 	connParams := grpc.ConnectParams{
 		Backoff: backoffConfig,
+		// TODO: Remove after https://github.com/containerd/containerd/pull/11508
+		MinConnectTimeout: connTimeout,
 	}
 	gopts := []grpc.DialOption{
 		// ------------------------------------------------------------------
@@ -931,11 +933,15 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 
 	if cfgStore.ContainerdAddr != "" {
+		log.G(ctx).WithFields(log.Fields{
+			"address": cfgStore.ContainerdAddr,
+			"timeout": connTimeout,
+		}).Info("Creating a containerd client")
 		d.containerdClient, err = containerd.New(
 			cfgStore.ContainerdAddr,
 			containerd.WithDefaultNamespace(cfgStore.ContainerdNamespace),
 			containerd.WithDialOpts(gopts),
-			containerd.WithTimeout(60*time.Second),
+			containerd.WithTimeout(connTimeout),
 		)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to dial %q", cfgStore.ContainerdAddr)
@@ -950,7 +956,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 				cfgStore.ContainerdAddr,
 				containerd.WithDefaultNamespace(cfgStore.ContainerdPluginNamespace),
 				containerd.WithDialOpts(gopts),
-				containerd.WithTimeout(60*time.Second),
+				containerd.WithTimeout(connTimeout),
 			)
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to dial %q", cfgStore.ContainerdAddr)
@@ -959,7 +965,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 
 		var (
 			shim     string
-			shimOpts interface{}
+			shimOpts any
 		)
 		if runtime.GOOS != "windows" {
 			shim, shimOpts, err = rts.Get("")
@@ -991,7 +997,7 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 	log.G(ctx).Debugf("Using default logging driver %s", d.defaultLogConfig.Type)
 
-	d.volumes, err = volumesservice.NewVolumeService(cfgStore.Root, d.PluginStore, rootIDs, d)
+	d.volumes, err = volumesservice.NewVolumeService(cfgStore.Root, d.PluginStore, idtools.Identity{UID: uid, GID: gid}, d)
 	if err != nil {
 		return nil, err
 	}
@@ -1071,12 +1077,10 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 		})
 	} else {
 		layerStore, err := layer.NewStoreFromOptions(layer.StoreOptions{
-			Root:                      cfgStore.Root,
-			MetadataStorePathTemplate: filepath.Join(cfgStore.Root, "image", "%s", "layerdb"),
-			GraphDriver:               driverName,
-			GraphDriverOptions:        cfgStore.GraphOptions,
-			IDMapping:                 idMapping,
-			ExperimentalEnabled:       cfgStore.Experimental,
+			Root:               cfgStore.Root,
+			GraphDriver:        driverName,
+			GraphDriverOptions: cfgStore.GraphOptions,
+			IDMapping:          idMapping,
 		})
 		if err != nil {
 			return nil, err
@@ -1220,7 +1224,7 @@ func (daemon *Daemon) shutdownContainer(c *container.Container) error {
 
 	// Wait without timeout for the container to exit.
 	// Ignore the result.
-	<-c.Wait(ctx, container.WaitConditionNotRunning)
+	<-c.Wait(ctx, containertypes.WaitConditionNotRunning)
 	return nil
 }
 
@@ -1417,7 +1421,7 @@ func prepareTempDir(rootDir string) (string, error) {
 			}
 		}
 	}
-	return tmpDir, idtools.MkdirAllAndChown(tmpDir, 0o700, idtools.CurrentIdentity())
+	return tmpDir, user.MkdirAllAndChown(tmpDir, 0o700, os.Getuid(), os.Getegid())
 }
 
 func (daemon *Daemon) setGenericResources(conf *config.Config) error {
@@ -1440,7 +1444,7 @@ func isBridgeNetworkDisabled(conf *config.Config) bool {
 	return conf.BridgeConfig.Iface == config.DisableNetworkBridge
 }
 
-func (daemon *Daemon) networkOptions(conf *config.Config, pg plugingetter.PluginGetter, hostID string, activeSandboxes map[string]interface{}) ([]nwconfig.Option, error) {
+func (daemon *Daemon) networkOptions(conf *config.Config, pg plugingetter.PluginGetter, hostID string, activeSandboxes map[string]any) ([]nwconfig.Option, error) {
 	options := []nwconfig.Option{
 		nwconfig.OptionDataDir(filepath.Join(conf.Root, config.LibnetDataPath)),
 		nwconfig.OptionExecRoot(conf.GetExecRoot()),
@@ -1539,7 +1543,8 @@ func CreateDaemonRoot(config *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return setupDaemonRoot(config, realRoot, idMapping.RootPair())
+	uid, gid := idMapping.RootPair()
+	return setupDaemonRoot(config, realRoot, uid, gid)
 }
 
 // RemapContainerdNamespaces returns the right containerd namespaces to use:
@@ -1555,19 +1560,19 @@ func RemapContainerdNamespaces(config *config.Config) (ns string, pluginNs strin
 	if idMapping.Empty() {
 		return config.ContainerdNamespace, config.ContainerdPluginNamespace, nil
 	}
-	root := idMapping.RootPair()
+	uid, gid := idMapping.RootPair()
 
 	ns = config.ContainerdNamespace
 	if _, ok := config.ValuesSet["containerd-namespace"]; !ok {
-		ns = fmt.Sprintf("%s-%d.%d", config.ContainerdNamespace, root.UID, root.GID)
+		ns = fmt.Sprintf("%s-%d.%d", config.ContainerdNamespace, uid, gid)
 	}
 
 	pluginNs = config.ContainerdPluginNamespace
 	if _, ok := config.ValuesSet["containerd-plugin-namespace"]; !ok {
-		pluginNs = fmt.Sprintf("%s-%d.%d", config.ContainerdPluginNamespace, root.UID, root.GID)
+		pluginNs = fmt.Sprintf("%s-%d.%d", config.ContainerdPluginNamespace, uid, gid)
 	}
 
-	return
+	return ns, pluginNs, nil
 }
 
 // checkpointAndSave grabs a container lock to safely call container.CheckpointTo
@@ -1594,7 +1599,7 @@ func (daemon *Daemon) GetAttachmentStore() *network.AttachmentStore {
 }
 
 // IdentityMapping returns uid/gid mapping or a SID (in the case of Windows) for the builder
-func (daemon *Daemon) IdentityMapping() idtools.IdentityMapping {
+func (daemon *Daemon) IdentityMapping() user.IdentityMapping {
 	return daemon.idMapping
 }
 

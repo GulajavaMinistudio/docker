@@ -332,7 +332,32 @@ func (ir *imageRouter) deleteImages(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (ir *imageRouter) getImagesByName(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	imageInspect, err := ir.backend.ImageInspect(ctx, vars["name"], backend.ImageInspectOpts{})
+	if err := httputils.ParseForm(r); err != nil {
+		return err
+	}
+
+	var manifests bool
+	if r.Form.Get("manifests") != "" && versions.GreaterThanOrEqualTo(httputils.VersionFromContext(ctx), "1.48") {
+		manifests = httputils.BoolValue(r, "manifests")
+	}
+
+	var platform *ocispec.Platform
+	if r.Form.Get("platform") != "" && versions.GreaterThanOrEqualTo(httputils.VersionFromContext(ctx), "1.49") {
+		p, err := httputils.DecodePlatform(r.Form.Get("platform"))
+		if err != nil {
+			return errdefs.InvalidParameter(err)
+		}
+		platform = p
+	}
+
+	if manifests && platform != nil {
+		return errdefs.InvalidParameter(errors.New("conflicting options: manifests and platform options cannot both be set"))
+	}
+
+	imageInspect, err := ir.backend.ImageInspect(ctx, vars["name"], backend.ImageInspectOpts{
+		Manifests: manifests,
+		Platform:  platform,
+	})
 	if err != nil {
 		return err
 	}

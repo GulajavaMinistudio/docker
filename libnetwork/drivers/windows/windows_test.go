@@ -33,7 +33,7 @@ func testNetwork(networkType string, t *testing.T) {
 		},
 	}
 
-	err = d.CreateNetwork("dummy", netOption, nil, ipdList, nil)
+	err = d.CreateNetwork(context.Background(), "dummy", netOption, nil, ipdList, nil)
 	if err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
@@ -134,7 +134,7 @@ func (test *testEndpoint) SetGatewayIPv6(ipv6 net.IP) error {
 	return nil
 }
 
-func (test *testEndpoint) SetNames(src string, dst string) error {
+func (test *testEndpoint) SetNames(_, _, _ string) error {
 	return nil
 }
 

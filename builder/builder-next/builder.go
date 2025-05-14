@@ -26,7 +26,6 @@ import (
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/libnetwork"
 	"github.com/docker/docker/opts"
-	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/streamformatter"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client"
@@ -35,6 +34,7 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/util/entitlements"
 	"github.com/moby/buildkit/util/tracing"
+	"github.com/moby/sys/user"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -89,7 +89,7 @@ type Opt struct {
 	RegistryHosts       docker.RegistryHosts
 	BuilderConfig       config.BuilderConfig
 	Rootless            bool
-	IdentityMapping     idtools.IdentityMapping
+	IdentityMapping     user.IdentityMapping
 	DNSConfig           config.DNSConfig
 	ApparmorProfile     string
 	UseSnapshotter      bool
@@ -97,6 +97,7 @@ type Opt struct {
 	ContainerdAddress   string
 	ContainerdNamespace string
 	Callbacks           exporter.BuildkitCallbacks
+	CDISpecDirs         []string
 }
 
 // Builder can build using BuildKit backend
@@ -185,8 +186,6 @@ func (b *Builder) DiskUsage(ctx context.Context) ([]*types.BuildCache, error) {
 }
 
 // Prune clears all reclaimable build cache.
-//
-// FIXME(thaJeztah): wire up new options https://github.com/moby/moby/issues/48639
 func (b *Builder) Prune(ctx context.Context, opts types.BuildCachePruneOptions) (int64, []string, error) {
 	ch := make(chan *controlapi.UsageRecord)
 
@@ -215,6 +214,8 @@ func (b *Builder) Prune(ctx context.Context, opts types.BuildCachePruneOptions) 
 			All:           pi.All,
 			KeepDuration:  int64(pi.KeepDuration),
 			ReservedSpace: pi.ReservedSpace,
+			MaxUsedSpace:  pi.MaxUsedSpace,
+			MinFreeSpace:  pi.MinFreeSpace,
 			Filter:        pi.Filter,
 		}, &pruneProxy{
 			streamProxy: streamProxy{ctx: ctx},
@@ -534,11 +535,12 @@ type wrapRC struct {
 func (w *wrapRC) Read(b []byte) (int, error) {
 	n, err := w.ReadCloser.Read(b)
 	if err != nil {
-		e := err
-		if e == io.EOF {
-			e = nil
+		switch err {
+		case io.EOF:
+			w.close(nil)
+		default:
+			w.close(err)
 		}
-		w.close(e)
 	}
 	return n, err
 }
@@ -638,7 +640,6 @@ func toBuildkitUlimits(inp []*container.Ulimit) (string, error) {
 	return strings.Join(ulimits, ","), nil
 }
 
-// FIXME(thaJeztah): wire-up new fields; see https://github.com/moby/moby/issues/48639
 func toBuildkitPruneInfo(opts types.BuildCachePruneOptions) (client.PruneInfo, error) {
 	var until time.Duration
 	untilValues := opts.Filters.Get("until")          // canonical
@@ -693,10 +694,17 @@ func toBuildkitPruneInfo(opts types.BuildCachePruneOptions) (client.PruneInfo, e
 			}
 		}
 	}
+
+	if opts.ReservedSpace == 0 && opts.KeepStorage != 0 {
+		opts.ReservedSpace = opts.KeepStorage
+	}
+
 	return client.PruneInfo{
 		All:           opts.All,
 		KeepDuration:  until,
-		ReservedSpace: opts.KeepStorage,
+		ReservedSpace: opts.ReservedSpace,
+		MaxUsedSpace:  opts.MaxUsedSpace,
+		MinFreeSpace:  opts.MinFreeSpace,
 		Filter:        []string{strings.Join(bkFilter, ",")},
 	}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/containerd/platforms"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
@@ -54,29 +55,18 @@ func (bc *Client) Build(ctx context.Context, fn BuildFunc) (*ResultBuilder, erro
 				}
 			}
 
-			p := platforms.DefaultSpec()
+			var p ocispecs.Platform
 			if tp != nil {
 				p = *tp
+			} else {
+				p = platforms.DefaultSpec()
 			}
-
-			// in certain conditions we allow input platform to be extended from base image
-			if p.OS == "windows" && img.OS == p.OS {
-				if p.OSVersion == "" && img.OSVersion != "" {
-					p.OSVersion = img.OSVersion
-				}
-				if p.OSFeatures == nil && len(img.OSFeatures) > 0 {
-					p.OSFeatures = append([]string{}, img.OSFeatures...)
-				}
-			}
-
-			p = platforms.Normalize(p)
-			k := platforms.FormatAll(p)
-
+			expPlat := makeExportPlatform(p, img.Platform)
 			if bc.MultiPlatformRequested {
-				res.AddRef(k, ref)
-				res.AddMeta(fmt.Sprintf("%s/%s", exptypes.ExporterImageConfigKey, k), config)
+				res.AddRef(expPlat.ID, ref)
+				res.AddMeta(fmt.Sprintf("%s/%s", exptypes.ExporterImageConfigKey, expPlat.ID), config)
 				if len(baseConfig) > 0 {
-					res.AddMeta(fmt.Sprintf("%s/%s", exptypes.ExporterImageBaseConfigKey, k), baseConfig)
+					res.AddMeta(fmt.Sprintf("%s/%s", exptypes.ExporterImageBaseConfigKey, expPlat.ID), baseConfig)
 				}
 			} else {
 				res.SetRef(ref)
@@ -85,10 +75,7 @@ func (bc *Client) Build(ctx context.Context, fn BuildFunc) (*ResultBuilder, erro
 					res.AddMeta(exptypes.ExporterImageBaseConfigKey, baseConfig)
 				}
 			}
-			expPlatforms.Platforms[i] = exptypes.Platform{
-				ID:       k,
-				Platform: p,
-			}
+			expPlatforms.Platforms[i] = expPlat
 			return nil
 		})
 	}
@@ -125,4 +112,30 @@ func (rb *ResultBuilder) EachPlatform(ctx context.Context, fn func(ctx context.C
 		})
 	}
 	return eg.Wait()
+}
+
+func extendWindowsPlatform(p, imgP ocispecs.Platform) ocispecs.Platform {
+	// in certain conditions we allow input platform to be extended from base image
+	if p.OS == "windows" && imgP.OS == p.OS {
+		if p.OSVersion == "" && imgP.OSVersion != "" {
+			p.OSVersion = imgP.OSVersion
+		}
+		if p.OSFeatures == nil && len(imgP.OSFeatures) > 0 {
+			p.OSFeatures = slices.Clone(imgP.OSFeatures)
+		}
+	}
+	return p
+}
+
+func makeExportPlatform(p, imgP ocispecs.Platform) exptypes.Platform {
+	p = platforms.Normalize(p)
+	exp := exptypes.Platform{
+		ID: platforms.FormatAll(p),
+	}
+	if p.OS == "windows" {
+		p = extendWindowsPlatform(p, imgP)
+		p = platforms.Normalize(p)
+	}
+	exp.Platform = p
+	return exp
 }

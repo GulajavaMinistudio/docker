@@ -21,7 +21,7 @@ import (
 	"github.com/docker/docker/daemon/config"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/libcontainerd/shimopts"
-	"github.com/docker/docker/pkg/atomicwriter"
+	"github.com/moby/sys/atomicwriter"
 	"github.com/opencontainers/runtime-spec/specs-go/features"
 	"github.com/pkg/errors"
 )
@@ -73,7 +73,7 @@ func defaultV2ShimConfig(conf *config.Config, runtimePath string) *shimConfig {
 	} else {
 		var features features.Features
 		if jsonErr := json.Unmarshal(featuresB, &features); jsonErr != nil {
-			log.G(context.TODO()).WithError(err).Warnf("Failed to unmarshal the output of %v as a JSON", featuresCmd.Args)
+			log.G(context.TODO()).WithError(jsonErr).Warnf("Failed to unmarshal the output of %v as a JSON", featuresCmd.Args)
 		} else {
 			shim.Features = &features
 		}

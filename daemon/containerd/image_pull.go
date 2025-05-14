@@ -117,13 +117,12 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 	}
 
 	jobs := newJobs()
-	h := c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		if c8dimages.IsLayerType(desc.MediaType) {
+	opts = append(opts, containerd.WithImageHandler(c8dimages.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		if showBlobProgress(desc) {
 			jobs.Add(desc)
 		}
 		return nil, nil
-	})
-	opts = append(opts, containerd.WithImageHandler(h))
+	})))
 
 	pp := &pullProgress{
 		store:       i.content,
@@ -229,7 +228,7 @@ func (i *ImageService) pullTag(ctx context.Context, ref reference.Named, platfor
 				return errdefs.NotFound(fmt.Errorf("no matching manifest for %s in the manifest list entries: %w", platformStr, err))
 			}
 		}
-		return err
+		return translateRegistryError(ctx, err)
 	}
 
 	logger := log.G(ctx).WithFields(log.Fields{

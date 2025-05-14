@@ -281,6 +281,8 @@ func (r *controller) Start(ctx context.Context) error {
 					return err
 				}
 				return nil
+			default:
+				// TODO(thaJeztah): make switch exhaustive
 			}
 		case <-ctx.Done():
 			return ctx.Err()
@@ -380,7 +382,7 @@ func (r *controller) Shutdown(ctx context.Context) error {
 	}
 
 	if err := r.adapter.shutdown(ctx); err != nil {
-		if !(errdefs.IsNotFound(err) || errdefs.IsNotModified(err)) {
+		if !errdefs.IsNotFound(err) && !errdefs.IsNotModified(err) {
 			return err
 		}
 	}
@@ -467,6 +469,8 @@ func (r *controller) waitReady(pctx context.Context) error {
 		switch ctnr.State.Status {
 		case "running", "exited", "dead":
 			return nil
+		default:
+			// TODO(thaJeztah): make switch exhaustive
 		}
 	}
 
@@ -480,6 +484,8 @@ func (r *controller) waitReady(pctx context.Context) error {
 			switch event.Action {
 			case "start":
 				return nil
+			default:
+				// TODO(thaJeztah): make switch exhaustive
 			}
 		case <-ctx.Done():
 			return ctx.Err()
@@ -550,9 +556,10 @@ func (r *controller) Logs(ctx context.Context, publisher exec.LogPublisher, opti
 			return errors.Wrap(err, "failed to convert timestamp")
 		}
 		var stream api.LogStream
-		if msg.Source == "stdout" {
+		switch msg.Source {
+		case "stdout":
 			stream = api.LogStreamStdout
-		} else if msg.Source == "stderr" {
+		case "stderr":
 			stream = api.LogStreamStderr
 		}
 
@@ -701,6 +708,10 @@ func (e *exitError) Cause() error {
 	return e.cause
 }
 
+func (e *exitError) Unwrap() error {
+	return e.cause
+}
+
 // checkHealth blocks until unhealthy container is detected or ctx exits
 func (r *controller) checkHealth(ctx context.Context) error {
 	eventq := r.adapter.events(ctx)
@@ -715,9 +726,7 @@ func (r *controller) checkHealth(ctx context.Context) error {
 			if !r.matchevent(event) {
 				continue
 			}
-
-			switch event.Action {
-			case events.ActionHealthStatusUnhealthy:
+			if event.Action == events.ActionHealthStatusUnhealthy {
 				return ErrContainerUnhealthy
 			}
 		}

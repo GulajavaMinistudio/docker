@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.22
+//go:build go1.23
 
 package daemon // import "github.com/docker/docker/daemon"
 
@@ -36,6 +36,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const errSetupNetworking = "failed to set up container networking"
 
 func ipAddresses(ips []net.IP) []string {
 	var addrs []string
@@ -171,7 +173,7 @@ func (daemon *Daemon) updateNetworkSettings(ctr *container.Container, n *libnetw
 	}
 
 	if !ctr.HostConfig.NetworkMode.IsHost() && containertypes.NetworkMode(n.Type()).IsHost() {
-		return runconfig.ErrConflictHostNetwork
+		return runconfig.ErrConflictConnectToHostNetwork
 	}
 
 	for s, v := range ctr.NetworkSettings.Networks {
@@ -759,12 +761,12 @@ func (daemon *Daemon) connectToNetwork(ctx context.Context, cfg *config.Config, 
 	if !ctr.Managed {
 		// add container name/alias to DNS
 		if err := daemon.ActivateContainerServiceBinding(ctr.Name); err != nil {
-			return fmt.Errorf("Activate container service binding for %s failed: %v", ctr.Name, err)
+			return fmt.Errorf("activate container service binding for %s failed: %v", ctr.Name, err)
 		}
 	}
 
 	if err := updateJoinInfo(ctr.NetworkSettings, n, ep); err != nil {
-		return fmt.Errorf("Updating join info failed: %v", err)
+		return fmt.Errorf("updating join info failed: %v", err)
 	}
 
 	ctr.NetworkSettings.Ports = getPortMapInfo(sb)
@@ -781,14 +783,6 @@ func updateJoinInfo(networkSettings *network.Settings, n *libnetwork.Network, ep
 
 	if networkSettings == nil {
 		return errors.New("invalid network settings while building port map info")
-	}
-
-	if len(networkSettings.Ports) == 0 {
-		pm, err := getEndpointPortMapInfo(ep)
-		if err != nil {
-			return err
-		}
-		networkSettings.Ports = pm
 	}
 
 	epInfo := ep.Info()
@@ -1051,7 +1045,7 @@ func (daemon *Daemon) DisconnectFromNetwork(ctx context.Context, ctr *container.
 		delete(ctr.NetworkSettings.Networks, networkName)
 	} else if err == nil {
 		if ctr.HostConfig.NetworkMode.IsHost() && containertypes.NetworkMode(n.Type()).IsHost() {
-			return runconfig.ErrConflictHostNetwork
+			return runconfig.ErrConflictDisconnectFromHostNetwork
 		}
 
 		if err := daemon.disconnectFromNetwork(ctx, ctr, n, false); err != nil {

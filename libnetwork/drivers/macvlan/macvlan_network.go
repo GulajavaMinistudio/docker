@@ -16,7 +16,7 @@ import (
 )
 
 // CreateNetwork the network for the specified driver type
-func (d *driver) CreateNetwork(nid string, option map[string]interface{}, nInfo driverapi.NetworkInfo, ipV4Data, ipV6Data []driverapi.IPAMData) error {
+func (d *driver) CreateNetwork(ctx context.Context, nid string, option map[string]interface{}, nInfo driverapi.NetworkInfo, ipV4Data, ipV6Data []driverapi.IPAMData) error {
 	// reject a null v4 network if ipv4 is required
 	if v, ok := option[netlabel.EnableIPv4]; ok && v.(bool) {
 		if len(ipV4Data) == 0 || ipV4Data[0].Pool.String() == "0.0.0.0/0" {
@@ -121,8 +121,7 @@ func (d *driver) createNetwork(config *configuration) (bool, error) {
 		}
 	} else {
 		// Check and mark this network if the interface was created for another network
-		networkList := d.getNetworks()
-		for _, testN := range networkList {
+		for _, testN := range d.getNetworks() {
 			if config.Parent == testN.config.Parent && testN.config.CreatedSlaveLink {
 				config.CreatedSlaveLink = true
 				break
@@ -130,14 +129,12 @@ func (d *driver) createNetwork(config *configuration) (bool, error) {
 		}
 	}
 	if !foundExisting {
-		n := &network{
+		d.addNetwork(&network{
 			id:        config.ID,
 			driver:    d,
 			endpoints: endpointTable{},
 			config:    config,
-		}
-		// add the network
-		d.addNetwork(n)
+		})
 	}
 
 	return foundExisting, nil

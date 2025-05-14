@@ -7,9 +7,9 @@ import (
 	"syscall"
 
 	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/docker/docker/pkg/idtools"
 	resourcestypes "github.com/moby/buildkit/executor/resources/types"
 	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/sys/user"
 )
 
 type Meta struct {
@@ -22,6 +22,7 @@ type Meta struct {
 	ReadonlyRootFS bool
 	ExtraHosts     []HostIP
 	Ulimit         []*pb.Ulimit
+	CDIDevices     []*pb.CDIDevice
 	CgroupParent   string
 	NetMode        pb.NetMode
 	SecurityMode   pb.SecurityMode
@@ -32,7 +33,7 @@ type Meta struct {
 
 type MountableRef interface {
 	Mount() ([]mount.Mount, func() error, error)
-	IdentityMapping() *idtools.IdentityMapping
+	IdentityMapping() *user.IdentityMapping
 }
 
 type Mountable interface {

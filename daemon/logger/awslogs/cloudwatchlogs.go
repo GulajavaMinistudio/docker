@@ -165,17 +165,12 @@ func New(info logger.Info) (logger.Logger, error) {
 
 	creationDone := make(chan bool)
 	if logNonBlocking {
+		const maxBackoff = 32
 		go func() {
 			backoff := 1
-			maxBackoff := 32
-			for {
-				// If logger is closed we are done
-				if containerStream.closed.Load() {
-					break
-				}
-
-				err := containerStream.create()
-				if err == nil {
+			// We're done when the logger is closed
+			for !containerStream.closed.Load() {
+				if err := containerStream.create(); err == nil {
 					break
 				}
 
@@ -183,11 +178,11 @@ func New(info logger.Info) (logger.Logger, error) {
 				if backoff < maxBackoff {
 					backoff *= 2
 				}
-				log.G(context.TODO()).
-					WithError(err).
-					WithField("container-id", info.ContainerID).
-					WithField("container-name", info.ContainerName).
-					Error("Error while trying to initialize awslogs. Retrying in: ", backoff, " seconds")
+				log.G(context.TODO()).WithFields(log.Fields{
+					"error":          err,
+					"container-id":   info.ContainerID,
+					"container-name": info.ContainerName,
+				}).Error("Error while trying to initialize awslogs. Retrying in: ", backoff, " seconds")
 			}
 			close(creationDone)
 		}()
@@ -673,15 +668,13 @@ func effectiveLen(line string) int {
 // UTF-8 encoded bytes with the Unicode replacement character (a 3-byte UTF-8
 // sequence, represented in Go as utf8.RuneError)
 func findValidSplit(line string, maxBytes int) (splitOffset, effectiveBytes int) {
-	for offset, rune := range line {
-		splitOffset = offset
-		if effectiveBytes+utf8.RuneLen(rune) > maxBytes {
-			return splitOffset, effectiveBytes
+	for offset, char := range line {
+		if effectiveBytes+utf8.RuneLen(char) > maxBytes {
+			return offset, effectiveBytes
 		}
-		effectiveBytes += utf8.RuneLen(rune)
+		effectiveBytes += utf8.RuneLen(char)
 	}
-	splitOffset = len(line)
-	return
+	return len(line), effectiveBytes
 }
 
 // publishBatch calls PutLogEvents for a given set of InputLogEvents,

@@ -19,12 +19,13 @@ func CheckInvalidPlatforms[T comparable](ctx context.Context, res *result.Result
 		return nil, err
 	}
 
-	if req.Request != "" {
-		return nil, nil
-	}
-
-	if _, ok := res.Metadata[exptypes.ExporterPlatformsKey]; len(res.Refs) > 0 && !ok {
-		return nil, errors.Errorf("build result contains multiple refs without platforms mapping")
+	if _, ok := res.Metadata[exptypes.ExporterPlatformsKey]; !ok {
+		if len(res.Refs) > 0 {
+			return nil, errors.Errorf("build result contains multiple refs without platforms mapping")
+		} else if res.IsEmpty() {
+			// No results and no exporter key. Don't run this check.
+			return nil, nil
+		}
 	}
 
 	isMap := len(res.Refs) > 0
@@ -42,7 +43,7 @@ func CheckInvalidPlatforms[T comparable](ctx context.Context, res *result.Result
 		p, err := platforms.Parse(v)
 		if err != nil {
 			warnings = append(warnings, client.VertexWarning{
-				Short: []byte(fmt.Sprintf("Invalid platform result requested %q: %s", v, err.Error())),
+				Short: fmt.Appendf(nil, "Invalid platform result requested %q: %s", v, err.Error()),
 			})
 		}
 		p = platforms.Normalize(p)
@@ -50,7 +51,7 @@ func CheckInvalidPlatforms[T comparable](ctx context.Context, res *result.Result
 		_, ok := reqMap[formatted]
 		if ok {
 			warnings = append(warnings, client.VertexWarning{
-				Short: []byte(fmt.Sprintf("Duplicate platform result requested %q", v)),
+				Short: fmt.Appendf(nil, "Duplicate platform result requested %q", v),
 			})
 		}
 		reqMap[formatted] = struct{}{}
@@ -79,7 +80,7 @@ func CheckInvalidPlatforms[T comparable](ctx context.Context, res *result.Result
 
 			if _, ok := reqMap[platforms.FormatAll(pp)]; !ok {
 				return []client.VertexWarning{{
-					Short: []byte(fmt.Sprintf("Requested platform %q does not match result platform %q", req.Platforms[0], platforms.FormatAll(pp))),
+					Short: fmt.Appendf(nil, "Requested platform %q does not match result platform %q", req.Platforms[0], platforms.FormatAll(pp)),
 				}}, nil
 			}
 		}
@@ -106,7 +107,7 @@ func CheckInvalidPlatforms[T comparable](ctx context.Context, res *result.Result
 
 	if mismatch {
 		return []client.VertexWarning{{
-			Short: []byte(fmt.Sprintf("Requested platforms %s do not match result platforms %s", platformsString(reqList), platformsString(ps.Platforms))),
+			Short: fmt.Appendf(nil, "Requested platforms %s do not match result platforms %s", platformsString(reqList), platformsString(ps.Platforms)),
 		}}, nil
 	}
 

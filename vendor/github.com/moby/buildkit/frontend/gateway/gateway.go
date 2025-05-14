@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,6 @@ import (
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/distribution/reference"
-	"github.com/docker/docker/pkg/idtools"
 	apitypes "github.com/moby/buildkit/api/types"
 	"github.com/moby/buildkit/cache"
 	cacheutil "github.com/moby/buildkit/cache/util"
@@ -48,6 +48,7 @@ import (
 	"github.com/moby/buildkit/worker"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/sys/signal"
+	"github.com/moby/sys/user"
 	digest "github.com/opencontainers/go-digest"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -113,11 +114,9 @@ func (gf *gatewayFrontend) checkSourceIsAllowed(source string) error {
 
 	taglessSource := reference.TrimNamed(sourceRef).Name()
 
-	for _, allowedRepository := range gf.allowedRepositories {
-		if taglessSource == allowedRepository {
-			// Allowed
-			return nil
-		}
+	if slices.Contains(gf.allowedRepositories, taglessSource) {
+		// Allowed
+		return nil
 	}
 	return errors.Errorf("'%s' is not an allowed gateway source", source)
 }
@@ -191,14 +190,22 @@ func (gf *gatewayFrontend) Solve(ctx context.Context, llbBridge frontend.Fronten
 		if err != nil {
 			return nil, err
 		}
-		st, dockerImage, err := dc.NamedContext(ctx, source, dockerui.ContextOpt{
+		nc, err := dc.NamedContext(source, dockerui.ContextOpt{
 			CaptureDigest: &mfstDigest,
 		})
 		if err != nil {
 			return nil, err
 		}
-		if dockerImage != nil {
-			img = *dockerImage
+		var st *llb.State
+		if nc != nil {
+			var dockerImage *dockerspec.DockerOCIImage
+			st, dockerImage, err = nc.Load(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if dockerImage != nil {
+				img = *dockerImage
+			}
 		}
 		if st == nil {
 			sourceRef, err := reference.ParseNormalizedNamed(source)
@@ -404,7 +411,7 @@ func (b *bindMount) Mount() ([]mount.Mount, func() error, error) {
 	}}, func() error { return nil }, nil
 }
 
-func (b *bindMount) IdentityMapping() *idtools.IdentityMapping {
+func (b *bindMount) IdentityMapping() *user.IdentityMapping {
 	return nil
 }
 
@@ -884,10 +891,18 @@ func (lbf *llbBridgeForwarder) Solve(ctx context.Context, req *pb.SolveRequest) 
 func (lbf *llbBridgeForwarder) getImmutableRef(ctx context.Context, id string) (cache.ImmutableRef, error) {
 	lbf.mu.Lock()
 	ref, ok := lbf.refs[id]
-	lbf.mu.Unlock()
 	if !ok {
-		return nil, errors.Errorf("no such ref: %s", id)
+		if lbf.result != nil {
+			if r, ok := lbf.result.FindRef(id); ok {
+				ref = r
+			}
+		}
+		if ref == nil {
+			lbf.mu.Unlock()
+			return nil, errors.Errorf("no such ref: %s, all %+v", id, maps.Keys(lbf.refs))
+		}
 	}
+	lbf.mu.Unlock()
 	if ref == nil {
 		return nil, errors.Errorf("empty ref: %s", id)
 	}

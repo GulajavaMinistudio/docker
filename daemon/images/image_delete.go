@@ -75,7 +75,19 @@ func (i *ImageService) ImageDelete(ctx context.Context, imageRef string, force, 
 	repoRefs := i.referenceStore.References(imgID.Digest())
 
 	using := func(c *container.Container) bool {
-		return c.ImageID == imgID
+		if c.ImageID == imgID {
+			return true
+		}
+
+		for _, mp := range c.MountPoints {
+			if mp.Type == "image" {
+				if mp.Spec.Source == string(imgID) {
+					return true
+				}
+			}
+		}
+
+		return false
 	}
 
 	var removedRepositoryRef bool
@@ -400,5 +412,5 @@ func (i *ImageService) checkImageDeleteConflict(imgID image.ID, mask conflictTyp
 // that there are no repository references to the given image and it has no
 // child images.
 func (i *ImageService) imageIsDangling(imgID image.ID) bool {
-	return !(len(i.referenceStore.References(imgID.Digest())) > 0 || len(i.imageStore.Children(imgID)) > 0)
+	return len(i.referenceStore.References(imgID.Digest())) == 0 && len(i.imageStore.Children(imgID)) == 0
 }
