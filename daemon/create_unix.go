@@ -1,6 +1,6 @@
 //go:build !windows
 
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
@@ -8,15 +8,15 @@ import (
 	"os"
 	"path/filepath"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	containertypes "github.com/docker/docker/api/types/container"
-	mounttypes "github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/oci"
-	"github.com/docker/docker/pkg/idtools"
-	volumemounts "github.com/docker/docker/volume/mounts"
-	volumeopts "github.com/docker/docker/volume/service/opts"
+	containertypes "github.com/moby/moby/api/types/container"
+	mounttypes "github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/idtools"
+	"github.com/moby/moby/v2/daemon/pkg/oci"
+	volumemounts "github.com/moby/moby/v2/daemon/volume/mounts"
+	volumeopts "github.com/moby/moby/v2/daemon/volume/service/opts"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
 )
@@ -110,7 +110,7 @@ func (daemon *Daemon) populateVolume(ctx context.Context, c *container.Container
 	uid, gid := daemon.idMapping.RootPair()
 	volumePath, cleanup, err := mnt.Setup(ctx, c.MountLabel, idtools.Identity{UID: uid, GID: gid}, nil)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		if cerrdefs.IsNotFound(err) {
 			return nil
 		}
 		log.G(ctx).WithError(err).Debugf("can't copy data from %s:%s, to %s", c.ID, mnt.Destination, volumePath)

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	obdlabel "github.com/containerd/accelerated-container-image/pkg/label"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/leases"
@@ -18,7 +20,6 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/pkg/labels"
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/hashicorp/go-multierror"
 	"github.com/moby/buildkit/cache/config"
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/session"
@@ -45,7 +46,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var additionalAnnotations = append(compression.EStargzAnnotations, labels.LabelUncompressed)
+var additionalAnnotations = append(append(compression.EStargzAnnotations, obdlabel.OverlayBDAnnotations...), labels.LabelUncompressed)
 
 // Ref is a reference to cacheable objects.
 type Ref interface {
@@ -145,12 +146,15 @@ type diffParents struct {
 }
 
 // caller must hold cacheManager.mu
-func (p parentRefs) release(ctx context.Context) (rerr error) {
+func (p parentRefs) release(ctx context.Context) error {
+	var errs []error
 	switch {
 	case p.layerParent != nil:
 		p.layerParent.mu.Lock()
 		defer p.layerParent.mu.Unlock()
-		rerr = p.layerParent.release(ctx)
+		if err := p.layerParent.release(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	case len(p.mergeParents) > 0:
 		for i, parent := range p.mergeParents {
 			if parent == nil {
@@ -158,7 +162,7 @@ func (p parentRefs) release(ctx context.Context) (rerr error) {
 			}
 			parent.mu.Lock()
 			if err := parent.release(ctx); err != nil {
-				rerr = multierror.Append(rerr, err).ErrorOrNil()
+				errs = append(errs, err)
 			} else {
 				p.mergeParents[i] = nil
 			}
@@ -169,7 +173,7 @@ func (p parentRefs) release(ctx context.Context) (rerr error) {
 			p.diffParents.lower.mu.Lock()
 			defer p.diffParents.lower.mu.Unlock()
 			if err := p.diffParents.lower.release(ctx); err != nil {
-				rerr = multierror.Append(rerr, err).ErrorOrNil()
+				errs = append(errs, err)
 			} else {
 				p.diffParents.lower = nil
 			}
@@ -178,17 +182,17 @@ func (p parentRefs) release(ctx context.Context) (rerr error) {
 			p.diffParents.upper.mu.Lock()
 			defer p.diffParents.upper.mu.Unlock()
 			if err := p.diffParents.upper.release(ctx); err != nil {
-				rerr = multierror.Append(rerr, err).ErrorOrNil()
+				errs = append(errs, err)
 			} else {
 				p.diffParents.upper = nil
 			}
 		}
 	}
 
-	return rerr
+	return stderrors.Join(errs...)
 }
 
-func (p parentRefs) clone() parentRefs {
+func (p parentRefs) cloneParentRefs() parentRefs {
 	switch {
 	case p.layerParent != nil:
 		p.layerParent = p.layerParent.clone()
@@ -361,12 +365,12 @@ func (cr *cacheRecord) size(ctx context.Context) (int64, error) {
 		}
 		if dgst := cr.getBlob(); dgst != "" {
 			added := make(map[digest.Digest]struct{})
-			info, err := cr.cm.ContentStore.Info(ctx, digest.Digest(dgst))
+			info, err := cr.cm.ContentStore.Info(ctx, dgst)
 			if err == nil {
 				usage.Size += info.Size
-				added[digest.Digest(dgst)] = struct{}{}
+				added[dgst] = struct{}{}
 			}
-			walkBlobVariantsOnly(ctx, cr.cm.ContentStore, digest.Digest(dgst), func(desc ocispecs.Descriptor) bool {
+			walkBlobVariantsOnly(ctx, cr.cm.ContentStore, dgst, func(desc ocispecs.Descriptor) bool {
 				if _, ok := added[desc.Digest]; !ok {
 					if info, err := cr.cm.ContentStore.Info(ctx, desc.Digest); err == nil {
 						usage.Size += info.Size
@@ -423,7 +427,11 @@ func (cr *cacheRecord) mount(ctx context.Context) (_ snapshot.Mountable, rerr er
 		// Return the mount direct from View rather than setting it using the Mounts call below.
 		// The two are equivalent for containerd snapshotters but the moby snapshotter requires
 		// the use of the mountable returned by View in this case.
-		mnts, err := cr.cm.Snapshotter.View(ctx, mountSnapshotID, cr.getSnapshotID())
+		labels := make(map[string]string)
+		if cr.cm.Snapshotter.Name() == "overlaybd" {
+			labels["containerd.io/snapshot/overlaybd.writable"] = "dev"
+		}
+		mnts, err := cr.cm.Snapshotter.View(ctx, mountSnapshotID, cr.getSnapshotID(), snapshots.WithLabels(labels))
 		if err != nil && !cerrdefs.IsAlreadyExists(err) {
 			return nil, err
 		}
@@ -472,7 +480,7 @@ func (cr *cacheRecord) remove(ctx context.Context, removeSnapshot bool) (rerr er
 	if err := cr.cm.MetadataStore.Clear(cr.ID()); err != nil {
 		return errors.Wrapf(err, "failed to delete metadata of %s", cr.ID())
 	}
-	if err := cr.parentRefs.release(ctx); err != nil {
+	if err := cr.release(ctx); err != nil {
 		return errors.Wrapf(err, "failed to release parents of %s", cr.ID())
 	}
 	return nil
@@ -593,18 +601,19 @@ func (cr *cacheRecord) layerDigestChain() []digest.Digest {
 
 type RefList []ImmutableRef
 
-func (l RefList) Release(ctx context.Context) (rerr error) {
+func (l RefList) Release(ctx context.Context) error {
+	var errs []error
 	for i, r := range l {
 		if r == nil {
 			continue
 		}
 		if err := r.Release(ctx); err != nil {
-			rerr = multierror.Append(rerr, err).ErrorOrNil()
+			errs = append(errs, err)
 		} else {
 			l[i] = nil
 		}
 	}
-	return rerr
+	return stderrors.Join(errs...)
 }
 
 func (sr *immutableRef) LayerChain() RefList {
@@ -1018,6 +1027,10 @@ func (sr *immutableRef) Extract(ctx context.Context, s session.Group) (rerr erro
 			return err
 		}
 		return rerr
+	} else if sr.cm.Snapshotter.Name() == "overlaybd" {
+		if rerr = sr.prepareRemoteSnapshotsOverlaybdMode(ctx); rerr == nil {
+			return sr.unlazy(ctx, sr.descHandlers, sr.progress, s, true, false)
+		}
 	}
 
 	return sr.unlazy(ctx, sr.descHandlers, sr.progress, s, true, false)
@@ -1026,7 +1039,6 @@ func (sr *immutableRef) Extract(ctx context.Context, s session.Group) (rerr erro
 func (sr *immutableRef) withRemoteSnapshotLabelsStargzMode(ctx context.Context, s session.Group, f func()) error {
 	dhs := sr.descHandlers
 	for _, r := range sr.layerChain() {
-		r := r
 		info, err := r.cm.Snapshotter.Stat(ctx, r.getSnapshotID())
 		if err != nil && !cerrdefs.IsNotFound(err) {
 			return err
@@ -1035,7 +1047,7 @@ func (sr *immutableRef) withRemoteSnapshotLabelsStargzMode(ctx context.Context, 
 		} else if _, ok := info.Labels["containerd.io/snapshot/remote"]; !ok {
 			continue // This isn't a remote snapshot; skip
 		}
-		dh := dhs[digest.Digest(r.getBlob())]
+		dh := dhs[r.getBlob()]
 		if dh == nil {
 			continue // no info passed; skip
 		}
@@ -1069,13 +1081,12 @@ func (sr *immutableRef) prepareRemoteSnapshotsStargzMode(ctx context.Context, s 
 	_, err := g.Do(ctx, sr.ID()+"-prepare-remote-snapshot", func(ctx context.Context) (_ *leaseutil.LeaseRef, rerr error) {
 		dhs := sr.descHandlers
 		for _, r := range sr.layerChain() {
-			r := r
 			snapshotID := r.getSnapshotID()
 			if _, err := r.cm.Snapshotter.Stat(ctx, snapshotID); err == nil {
 				continue
 			}
 
-			dh := dhs[digest.Digest(r.getBlob())]
+			dh := dhs[r.getBlob()]
 			if dh == nil {
 				// We cannot prepare remote snapshots without descHandler.
 				return nil, nil
@@ -1140,6 +1151,54 @@ func (sr *immutableRef) prepareRemoteSnapshotsStargzMode(ctx context.Context, s 
 			break
 		}
 
+		return nil, nil
+	})
+	return err
+}
+
+func (sr *immutableRef) prepareRemoteSnapshotsOverlaybdMode(ctx context.Context) error {
+	_, err := g.Do(ctx, sr.ID()+"-prepare-remote-snapshot", func(ctx context.Context) (_ *leaseutil.LeaseRef, rerr error) {
+		dhs := sr.descHandlers
+		for _, r := range sr.layerChain() {
+			snapshotID := r.getSnapshotID()
+			if _, err := r.cm.Snapshotter.Stat(ctx, snapshotID); err == nil {
+				continue
+			}
+			dh := dhs[digest.Digest(r.getBlob())]
+			if dh == nil {
+				// We cannot prepare remote snapshots without descHandler.
+				return nil, nil
+			}
+			defaultLabels := snapshots.FilterInheritedLabels(dh.SnapshotLabels)
+			if defaultLabels == nil {
+				defaultLabels = make(map[string]string)
+			}
+			defaultLabels["containerd.io/snapshot.ref"] = snapshotID
+			// Prepare remote snapshots
+			var (
+				key  = fmt.Sprintf("tmp-%s %s", identity.NewID(), r.getChainID())
+				opts = []snapshots.Opt{
+					snapshots.WithLabels(defaultLabels),
+				}
+			)
+			parentID := ""
+			if r.layerParent != nil {
+				parentID = r.layerParent.getSnapshotID()
+			}
+			if err := r.cm.Snapshotter.Prepare(ctx, key, parentID, opts...); err != nil {
+				if cerrdefs.IsAlreadyExists(err) {
+					// Check if the targeting snapshot ID has been prepared as
+					// a remote snapshot in the snapshotter.
+					_, err := r.cm.Snapshotter.Stat(ctx, snapshotID)
+					if err == nil { // usable as remote snapshot without unlazying.
+						// Try the next layer as well.
+						continue
+					}
+				}
+			}
+			// This layer and all upper layers cannot be prepared without unlazying.
+			break
+		}
 		return nil, nil
 	})
 	return err
@@ -1319,7 +1378,12 @@ func (sr *immutableRef) unlazyLayer(ctx context.Context, dhs DescHandlers, pg pr
 
 	key := fmt.Sprintf("extract-%s %s", identity.NewID(), sr.getChainID())
 
-	err = sr.cm.Snapshotter.Prepare(ctx, key, parentID)
+	if sr.cm.Snapshotter.Name() == "overlaybd" {
+		err = sr.cm.Snapshotter.Prepare(ctx, key, parentID,
+			snapshots.WithLabels(map[string]string{"containerd.io/snapshot.ref": string(sr.getChainID())}))
+	} else {
+		err = sr.cm.Snapshotter.Prepare(ctx, key, parentID)
+	}
 	if err != nil {
 		return err
 	}
@@ -1479,7 +1543,7 @@ func (sr *mutableRef) commit() (_ *immutableRef, rerr error) {
 	rec := &cacheRecord{
 		mu:            sr.mu,
 		cm:            sr.cm,
-		parentRefs:    sr.parentRefs.clone(),
+		parentRefs:    sr.cloneParentRefs(),
 		equalMutable:  sr,
 		refs:          make(map[ref]struct{}),
 		cacheMetadata: md,
@@ -1635,16 +1699,16 @@ func readonlyOverlay(opt []string) []string {
 	out := make([]string, 0, len(opt))
 	upper := ""
 	for _, o := range opt {
-		if strings.HasPrefix(o, "upperdir=") {
-			upper = strings.TrimPrefix(o, "upperdir=")
+		if after, ok := strings.CutPrefix(o, "upperdir="); ok {
+			upper = after
 		} else if !strings.HasPrefix(o, "workdir=") {
 			out = append(out, o)
 		}
 	}
 	if upper != "" {
 		for i, o := range out {
-			if strings.HasPrefix(o, "lowerdir=") {
-				out[i] = "lowerdir=" + upper + ":" + strings.TrimPrefix(o, "lowerdir=")
+			if after, ok := strings.CutPrefix(o, "lowerdir="); ok {
+				out[i] = "lowerdir=" + upper + ":" + after
 			}
 		}
 	}

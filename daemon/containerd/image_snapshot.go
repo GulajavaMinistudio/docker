@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	c8dimages "github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/leases"
@@ -10,11 +11,11 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/daemon/snapshotter"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/image"
-	"github.com/docker/docker/layer"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/image"
+	"github.com/moby/moby/v2/daemon/internal/layer"
+	"github.com/moby/moby/v2/daemon/snapshotter"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -102,6 +103,15 @@ func (i *ImageService) getImageSnapshot(ctx context.Context, descriptor *ocispec
 	platformImg, err := i.NewImageManifest(ctx, c8dImg, c8dImg.Target)
 	if err != nil {
 		return "", err
+	}
+
+	cfgDesc, err := platformImg.Config(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if strings.HasPrefix(strings.ToLower(cfgDesc.MediaType), "application/vnd.docker.ai.") {
+		return "", errors.New("Running AI models directly by the Engine is not supported yet, please use 'docker model run' instead")
 	}
 
 	unpacked, err := platformImg.IsUnpacked(ctx, i.snapshotter)

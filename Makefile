@@ -38,8 +38,10 @@ DOCKER_ENVS := \
 	-e DOCKERCLI_INTEGRATION_REPOSITORY \
 	-e DOCKER_DEBUG \
 	-e DOCKER_EXPERIMENTAL \
+	-e DOCKER_FIREWALL_BACKEND \
 	-e DOCKER_GITCOMMIT \
 	-e DOCKER_GRAPHDRIVER \
+	-e DOCKER_IGNORE_BR_NETFILTER_ERROR \
 	-e DOCKER_LDFLAGS \
 	-e DOCKER_PORT \
 	-e DOCKER_REMAP_ROOT \
@@ -53,7 +55,7 @@ DOCKER_ENVS := \
 	-e GITHUB_ACTIONS \
 	-e TEST_FORCE_VALIDATE \
 	-e TEST_INTEGRATION_DIR \
-	-e TEST_INTEGRATION_USE_SNAPSHOTTER \
+	-e TEST_INTEGRATION_USE_GRAPHDRIVER \
 	-e TEST_INTEGRATION_FAIL_FAST \
 	-e TEST_SKIP_INTEGRATION \
 	-e TEST_SKIP_INTEGRATION_CLI \
@@ -83,11 +85,11 @@ DOCKER_ENVS := \
 # to allow `make BIND_DIR=. shell` or `make BIND_DIR= test`
 # (default to no bind mount if DOCKER_HOST is set)
 # note: BINDDIR is supported for backwards-compatibility here
-BIND_DIR := $(if $(BINDDIR),$(BINDDIR),$(if $(DOCKER_HOST),,bundles))
+BIND_DIR := $(if $(BINDDIR),$(BINDDIR),$(if $(DOCKER_HOST),,.))
 
 # DOCKER_MOUNT can be overridden, but use at your own risk!
 ifndef DOCKER_MOUNT
-DOCKER_MOUNT := $(if $(BIND_DIR),-v "$(CURDIR)/$(BIND_DIR):/go/src/github.com/docker/docker/$(BIND_DIR)")
+DOCKER_MOUNT := $(if $(BIND_DIR),-v "$(BIND_DIR):/go/src/github.com/docker/docker/$(BIND_DIR)")
 DOCKER_MOUNT := $(if $(DOCKER_BINDDIR_MOUNT_OPTS),$(DOCKER_MOUNT):$(DOCKER_BINDDIR_MOUNT_OPTS),$(DOCKER_MOUNT))
 
 # This allows the test suite to be able to run without worrying about the underlying fs used by the container running the daemon (e.g. aufs-on-aufs), so long as the host running the container is running a supported fs.
@@ -203,7 +205,7 @@ build: shell_target := --target=dev-base
 else
 build: shell_target := --target=dev
 endif
-build: bundles
+build: validate-bind-dir bundles
 	$(BUILD_CMD) $(BUILD_OPTS) $(shell_target) --load -t "$(DOCKER_IMAGE)" .
 
 .PHONY: shell
@@ -284,3 +286,10 @@ generate-files:
 		--file "./hack/dockerfiles/generate-files.Dockerfile" .
 	cp -R "$($@_TMP_OUT)"/. .
 	rm -rf "$($@_TMP_OUT)"/*
+
+.PHONY: validate-bind-dir
+validate-bind-dir:
+	@case "$(BIND_DIR)" in \
+		".."*|"/"*) echo "Make needs to be run from the project-root directory, with BIND_DIR set to \".\" or a subdir"; \
+		exit 1 ;; \
+	esac

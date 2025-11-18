@@ -1,12 +1,13 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
+	"runtime"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/internal/platform"
+	cerrdefs "github.com/containerd/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/platform"
 )
 
 func (daemon *Daemon) stats(c *container.Container) (*containertypes.StatsResponse, error) {
@@ -20,7 +21,7 @@ func (daemon *Daemon) stats(c *container.Container) (*containertypes.StatsRespon
 	// Obtain the stats from HCS via libcontainerd
 	stats, err := task.Stats(context.Background())
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		if cerrdefs.IsNotFound(err) {
 			return nil, containerNotFound(c.ID)
 		}
 		return nil, err
@@ -28,6 +29,9 @@ func (daemon *Daemon) stats(c *container.Container) (*containertypes.StatsRespon
 
 	// Start with an empty structure
 	s := &containertypes.StatsResponse{
+		ID:       c.ID,
+		Name:     c.Name,
+		OSType:   runtime.GOOS,
 		Read:     stats.Read,
 		NumProcs: platform.NumProcs(),
 	}

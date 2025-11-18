@@ -1,6 +1,3 @@
-// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.23
-
 package containerd
 
 import (
@@ -12,9 +9,9 @@ import (
 
 	c8dimages "github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/internal/testutils/specialimage"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -30,7 +27,7 @@ type pushTestCase struct {
 }
 
 func TestImagePushIndex(t *testing.T) {
-	ctx := namespaces.WithNamespace(context.TODO(), "testing-"+t.Name())
+	ctx := namespaces.WithNamespace(t.Context(), "testing-"+t.Name())
 
 	csDir := t.TempDir()
 	store := &blobsDirContentStore{blobs: filepath.Join(csDir, "blobs/sha256")}
@@ -279,10 +276,10 @@ func singleManifestSelected(platform ocispec.Platform) func(t *testing.T, img c8
 
 // candidateNotFound asserts that the no matching candidate was found.
 func candidateNotFound(t *testing.T, _ c8dimages.Image, desc ocispec.Descriptor, err error) {
-	assert.Check(t, errdefs.IsNotFound(err), "expected NotFound error, got %v, candidate: %v", err, desc.Platform)
+	assert.Check(t, cerrdefs.IsNotFound(err), "expected NotFound error, got %v, candidate: %v", err, desc.Platform)
 }
 
 // multipleCandidates asserts that multiple matching candidates were found and no decision could be made.
 func multipleCandidates(t *testing.T, _ c8dimages.Image, desc ocispec.Descriptor, err error) {
-	assert.Check(t, errdefs.IsConflict(err), "expected Conflict error, got %v, candidate: %v", err, desc.Platform)
+	assert.Check(t, cerrdefs.IsConflict(err), "expected Conflict error, got %v, candidate: %v", err, desc.Platform)
 }

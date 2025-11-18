@@ -1,12 +1,12 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/pkg/errors"
 )
 
@@ -43,7 +43,7 @@ func (daemon *Daemon) update(name string, hostConfig *container.HostConfig) erro
 	defer func() {
 		if restoreConfig {
 			ctr.Lock()
-			if !ctr.RemovalInProgress && !ctr.Dead {
+			if !ctr.State.RemovalInProgress && !ctr.State.Dead {
 				ctr.HostConfig = &backupHostConfig
 				ctr.CheckpointTo(context.WithoutCancel(context.TODO()), daemon.containersReplica)
 			}
@@ -53,9 +53,9 @@ func (daemon *Daemon) update(name string, hostConfig *container.HostConfig) erro
 
 	ctr.Lock()
 
-	if ctr.RemovalInProgress || ctr.Dead {
+	if ctr.State.RemovalInProgress || ctr.State.Dead {
 		ctr.Unlock()
-		return errCannotUpdate(ctr.ID, fmt.Errorf(`container is marked for removal and cannot be "update"`))
+		return errCannotUpdate(ctr.ID, errors.New(`container is marked for removal and cannot be "update"`))
 	}
 
 	if err := ctr.UpdateContainer(hostConfig); err != nil {
@@ -83,10 +83,10 @@ func (daemon *Daemon) update(name string, hostConfig *container.HostConfig) erro
 	// If container is running (including paused), we need to update configs
 	// to the real world.
 	ctr.Lock()
-	isRestarting := ctr.Restarting
+	isRestarting := ctr.State.Restarting
 	tsk, err := ctr.GetRunningTask()
 	ctr.Unlock()
-	if errdefs.IsConflict(err) || isRestarting {
+	if cerrdefs.IsConflict(err) || isRestarting {
 		return nil
 	}
 	if err != nil {

@@ -1,4 +1,4 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"fmt"
@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/backend"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/server/backend"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -52,9 +52,8 @@ func TestContainerDelete(t *testing.T) {
 			doc:    "restarting container",
 			errMsg: "container is restarting: stop the container before removing or force remove",
 			initContainer: func() *container.Container {
-				c := newContainerWithState(container.NewState())
-				c.SetRunning(nil, nil, time.Now())
-				c.SetRestarting(&container.ExitStatus{})
+				c := newContainerWithState(&container.State{Running: true, StartedAt: time.Now()})
+				c.State.SetRestarting(&container.ExitStatus{})
 				return c
 			},
 		},
@@ -75,17 +74,17 @@ func TestContainerDelete(t *testing.T) {
 			d.containers.Add(c.ID, c)
 
 			err := d.ContainerRm(c.ID, &backend.ContainerRmConfig{ForceRemove: false})
-			assert.Check(t, is.ErrorType(err, errdefs.IsConflict))
+			assert.Check(t, is.ErrorType(err, cerrdefs.IsConflict))
 			assert.Check(t, is.ErrorContains(err, tc.errMsg))
 		})
 	}
 }
 
 func TestContainerDoubleDelete(t *testing.T) {
-	c := newContainerWithState(container.NewState())
+	c := newContainerWithState(&container.State{})
 
 	// Mark the container as having a delete in progress
-	c.SetRemovalInProgress()
+	c.State.SetRemovalInProgress()
 
 	d, cleanup := newDaemonWithTmpRoot(t)
 	defer cleanup()

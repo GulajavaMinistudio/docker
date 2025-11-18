@@ -23,7 +23,7 @@ on:
   pull_request:
 
 env:
-  GO_VERSION: "1.24.3"
+  GO_VERSION: "1.25.4"
   GIT_PAGER: "cat"
   PAGER: "cat"
   SETUP_BUILDX_VERSION: edge
@@ -44,6 +44,7 @@ jobs:
         mode:
           - ""
           - systemd
+          - firewalld
     steps:
       -
         name: Prepare
@@ -65,10 +66,11 @@ jobs:
           targets: dev
           set: |
             *.cache-from=type=gha,scope=dev${{ matrix.mode }}
-            *.cache-to=type=gha,scope=dev${{ matrix.mode }},mode=max
+            *.cache-to=type=gha,scope=dev${{ matrix.mode }}
             *.output=type=cacheonly
 
   test:
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only') }}
     needs:
       - build-dev
       - validate-dco
@@ -84,6 +86,7 @@ jobs:
       storage: ${{ matrix.storage }}
 
   test-unit:
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only') }}
     needs:
       - build-dev
       - validate-dco
@@ -153,6 +156,7 @@ jobs:
   smoke-prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 10 # guardrails timeout for the whole job
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only') }}
     needs:
       - validate-dco
     outputs:
@@ -175,6 +179,7 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only') }}
     needs:
       - smoke-prepare
     strategy:

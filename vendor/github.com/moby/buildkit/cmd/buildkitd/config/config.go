@@ -12,7 +12,7 @@ type Config struct {
 	// Root is the path to a directory where buildkit will store persistent data
 	Root string `toml:"root"`
 
-	// Entitlements e.g. security.insecure, network.host
+	// Entitlements e.g. security.insecure, network.host, device
 	Entitlements []string `toml:"insecure-entitlements"`
 
 	// LogFormat is the format of the logs. It can be "json" or "text".
@@ -42,6 +42,10 @@ type Config struct {
 	} `toml:"frontend"`
 
 	System *SystemConfig `toml:"system"`
+
+	// ProvenanceEnvDir is the directory where extra config is loaded
+	// that is added to the provenance of builds. Defaults to /etc/buildkit/provenance.d/ ,
+	ProvenanceEnvDir string `toml:"provenanceEnvDir"`
 }
 
 type SystemConfig struct {
@@ -104,7 +108,7 @@ type NetworkConfig struct {
 type OCIConfig struct {
 	Enabled          *bool             `toml:"enabled"`
 	Labels           map[string]string `toml:"labels"`
-	Platforms        []string          `toml:"platforms"`
+	Platforms        []string          `toml:"platforms,omitempty"`
 	Snapshotter      string            `toml:"snapshotter"`
 	Rootless         bool              `toml:"rootless"`
 	NoProcessSandbox bool              `toml:"noProcessSandbox"`
@@ -138,7 +142,7 @@ type ContainerdConfig struct {
 	Address   string            `toml:"address"`
 	Enabled   *bool             `toml:"enabled"`
 	Labels    map[string]string `toml:"labels"`
-	Platforms []string          `toml:"platforms"`
+	Platforms []string          `toml:"platforms,omitempty"`
 	Namespace string            `toml:"namespace"`
 	Runtime   ContainerdRuntime `toml:"runtime"`
 	GCConfig

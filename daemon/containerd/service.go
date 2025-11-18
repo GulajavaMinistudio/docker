@@ -14,13 +14,15 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
-	"github.com/docker/docker/container"
-	daemonevents "github.com/docker/docker/daemon/events"
-	dimages "github.com/docker/docker/daemon/images"
-	"github.com/docker/docker/daemon/snapshotter"
-	"github.com/docker/docker/distribution"
-	"github.com/docker/docker/errdefs"
+	"github.com/moby/moby/v2/daemon/container"
+	daemonevents "github.com/moby/moby/v2/daemon/events"
+	dimages "github.com/moby/moby/v2/daemon/images"
+	"github.com/moby/moby/v2/daemon/internal/distribution"
+	"github.com/moby/moby/v2/daemon/snapshotter"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/moby/sys/user"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
@@ -96,7 +98,15 @@ func (i *ImageService) CountImages(ctx context.Context) int {
 		return 0
 	}
 
-	return len(imgs)
+	uniqueImages := map[digest.Digest]struct{}{}
+	for _, i := range imgs {
+		dgst := i.Target().Digest
+		if _, ok := uniqueImages[dgst]; !ok {
+			uniqueImages[dgst] = struct{}{}
+		}
+	}
+
+	return len(uniqueImages)
 }
 
 // LayerStoreStatus returns the status for each layer store
@@ -127,13 +137,43 @@ func (i *ImageService) StorageDriver() string {
 	return i.snapshotter
 }
 
+// ImageDiskUsage returns the number of bytes used by content and layer stores
+// called from disk_usage.go
+func (i *ImageService) ImageDiskUsage(ctx context.Context) (int64, error) {
+	diskUsage, err := i.layerDiskUsage(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	// Include the size of content size from the images.
+	imgs, err := i.images.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	visitedImages := make(map[digest.Digest]struct{})
+	for _, img := range imgs {
+		if err := i.walkPresentChildren(ctx, img.Target, func(ctx context.Context, desc ocispec.Descriptor) error {
+			if _, ok := visitedImages[desc.Digest]; ok {
+				return nil
+			}
+			visitedImages[desc.Digest] = struct{}{}
+
+			diskUsage += desc.Size
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return diskUsage, nil
+}
+
 // LayerDiskUsage returns the number of bytes used by layer stores
 // called from disk_usage.go
-func (i *ImageService) LayerDiskUsage(ctx context.Context) (int64, error) {
-	var allLayersSize int64
+func (i *ImageService) layerDiskUsage(ctx context.Context) (allLayersSize int64, err error) {
 	// TODO(thaJeztah): do we need to take multiple snapshotters into account? See https://github.com/moby/moby/issues/45273
 	snapshotter := i.client.SnapshotService(i.snapshotter)
-	snapshotter.Walk(ctx, func(ctx context.Context, info snapshots.Info) error {
+	err = snapshotter.Walk(ctx, func(ctx context.Context, info snapshots.Info) error {
 		usage, err := snapshotter.Usage(ctx, info.Name)
 		if err != nil {
 			return err
@@ -141,7 +181,7 @@ func (i *ImageService) LayerDiskUsage(ctx context.Context) (int64, error) {
 		allLayersSize += usage.Size
 		return nil
 	})
-	return allLayersSize, nil
+	return allLayersSize, err
 }
 
 // UpdateConfig values

@@ -1,20 +1,21 @@
-package images // import "github.com/docker/docker/daemon/images"
+package images
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	imagetypes "github.com/docker/docker/api/types/image"
-	timetypes "github.com/docker/docker/api/types/time"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/image"
-	"github.com/docker/docker/layer"
+	"github.com/moby/moby/api/types/events"
+	imagetypes "github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/v2/daemon/internal/filters"
+	"github.com/moby/moby/v2/daemon/internal/image"
+	"github.com/moby/moby/v2/daemon/internal/layer"
+	"github.com/moby/moby/v2/daemon/internal/timestamp"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 )
@@ -30,8 +31,8 @@ var imagesAcceptedFilters = map[string]bool{
 // one is in progress
 var errPruneRunning = errdefs.Conflict(errors.New("a prune operation is already running"))
 
-// ImagesPrune removes unused images
-func (i *ImageService) ImagesPrune(ctx context.Context, pruneFilters filters.Args) (*imagetypes.PruneReport, error) {
+// ImagePrune removes unused images
+func (i *ImageService) ImagePrune(ctx context.Context, pruneFilters filters.Args) (*imagetypes.PruneReport, error) {
 	if !i.pruneRunning.CompareAndSwap(false, true) {
 		return nil, errPruneRunning
 	}
@@ -114,7 +115,9 @@ deleteImagesLoop:
 
 			if shouldDelete {
 				for _, ref := range refs {
-					imgDel, err := i.ImageDelete(ctx, ref.String(), false, true)
+					imgDel, err := i.ImageDelete(ctx, ref.String(), imagebackend.RemoveOptions{
+						PruneChildren: true,
+					})
 					if imageDeleteFailed(ref.String(), err) {
 						continue
 					}
@@ -123,7 +126,9 @@ deleteImagesLoop:
 			}
 		} else {
 			hex := id.Digest().Encoded()
-			imgDel, err := i.ImageDelete(ctx, hex, false, true)
+			imgDel, err := i.ImageDelete(ctx, hex, imagebackend.RemoveOptions{
+				PruneChildren: true,
+			})
 			if imageDeleteFailed(hex, err) {
 				continue
 			}
@@ -136,15 +141,14 @@ deleteImagesLoop:
 	// Compute how much space was freed
 	for _, d := range rep.ImagesDeleted {
 		if d.Deleted != "" {
-			chid := layer.ChainID(d.Deleted)
-			if l, ok := allLayers[chid]; ok {
+			if l, ok := allLayers[layer.ChainID(d.Deleted)]; ok {
 				rep.SpaceReclaimed += uint64(l.DiffSize())
 			}
 		}
 	}
 
 	if canceled {
-		log.G(ctx).Debugf("ImagesPrune operation cancelled: %#v", *rep)
+		log.G(ctx).Debugf("ImagePrune operation cancelled: %#v", *rep)
 	}
 	i.eventsService.Log(events.ActionPrune, events.ImageEventType, events.Actor{
 		Attributes: map[string]string{
@@ -158,7 +162,7 @@ func imageDeleteFailed(ref string, err error) bool {
 	switch {
 	case err == nil:
 		return false
-	case errdefs.IsConflict(err), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case cerrdefs.IsConflict(err), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return true
 	default:
 		log.G(context.TODO()).Warnf("failed to prune image %s: %v", ref, err)
@@ -187,13 +191,13 @@ func getUntilFromPruneFilters(pruneFilters filters.Args) (time.Time, error) {
 	}
 	untilFilters := pruneFilters.Get("until")
 	if len(untilFilters) > 1 {
-		return until, fmt.Errorf("more than one until filter specified")
+		return until, errors.New("more than one until filter specified")
 	}
-	ts, err := timetypes.GetTimestamp(untilFilters[0], time.Now())
+	ts, err := timestamp.GetTimestamp(untilFilters[0], time.Now())
 	if err != nil {
 		return until, err
 	}
-	seconds, nanoseconds, err := timetypes.ParseTimestamps(ts, 0)
+	seconds, nanoseconds, err := timestamp.ParseTimestamps(ts, 0)
 	if err != nil {
 		return until, err
 	}

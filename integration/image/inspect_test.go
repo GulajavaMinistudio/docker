@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/internal/testutils/specialimage"
+	"github.com/moby/moby/client"
+	iimage "github.com/moby/moby/v2/integration/internal/image"
+	"github.com/moby/moby/v2/internal/testutil/specialimage"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -21,7 +21,7 @@ func TestImageInspectEmptyTagsAndDigests(t *testing.T) {
 
 	apiClient := testEnv.APIClient()
 
-	danglingID := specialimage.Load(ctx, t, apiClient, specialimage.Dangling)
+	danglingID := iimage.Load(ctx, t, apiClient, specialimage.Dangling)
 
 	var raw bytes.Buffer
 	inspect, err := apiClient.ImageInspect(ctx, danglingID, client.ImageInspectWithRawResponse(&raw))
@@ -31,7 +31,7 @@ func TestImageInspectEmptyTagsAndDigests(t *testing.T) {
 	assert.Check(t, is.Len(inspect.RepoTags, 0))
 	assert.Check(t, is.Len(inspect.RepoDigests, 0))
 
-	var rawJson map[string]interface{}
+	var rawJson map[string]any
 	err = json.Unmarshal(raw.Bytes(), &rawJson)
 	assert.NilError(t, err)
 
@@ -44,21 +44,21 @@ func TestImageInspectEmptyTagsAndDigests(t *testing.T) {
 func TestImageInspectUniqueRepoDigests(t *testing.T) {
 	ctx := setupTest(t)
 
-	client := testEnv.APIClient()
+	apiClient := testEnv.APIClient()
 
-	before, err := client.ImageInspect(ctx, "busybox")
+	before, err := apiClient.ImageInspect(ctx, "busybox")
 	assert.NilError(t, err)
 
 	for _, tag := range []string{"master", "newest"} {
 		imgName := "busybox:" + tag
-		err := client.ImageTag(ctx, "busybox", imgName)
+		_, err := apiClient.ImageTag(ctx, client.ImageTagOptions{Source: "busybox", Target: imgName})
 		assert.NilError(t, err)
 		defer func() {
-			_, _ = client.ImageRemove(ctx, imgName, image.RemoveOptions{Force: true})
+			_, _ = apiClient.ImageRemove(ctx, imgName, client.ImageRemoveOptions{Force: true})
 		}()
 	}
 
-	after, err := client.ImageInspect(ctx, "busybox")
+	after, err := apiClient.ImageInspect(ctx, "busybox")
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Len(after.RepoDigests, len(before.RepoDigests)))
@@ -67,9 +67,9 @@ func TestImageInspectUniqueRepoDigests(t *testing.T) {
 func TestImageInspectDescriptor(t *testing.T) {
 	ctx := setupTest(t)
 
-	client := testEnv.APIClient()
+	apiClient := testEnv.APIClient()
 
-	inspect, err := client.ImageInspect(ctx, "busybox")
+	inspect, err := apiClient.ImageInspect(ctx, "busybox")
 	assert.NilError(t, err)
 
 	if !testEnv.UsingSnapshotter() {
@@ -103,7 +103,7 @@ func TestImageInspectWithPlatform(t *testing.T) {
 		Architecture: "amd64",
 	}
 
-	imageID := specialimage.Load(ctx, t, apiClient, func(dir string) (*ocispec.Index, error) {
+	imageID := iimage.Load(ctx, t, apiClient, func(dir string) (*ocispec.Index, error) {
 		i, descs, err := specialimage.MultiPlatform(dir, "multiplatform:latest", []ocispec.Platform{nativePlatform, differentPlatform})
 		assert.NilError(t, err)
 

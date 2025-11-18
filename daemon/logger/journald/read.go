@@ -1,6 +1,6 @@
 //go:build linux && cgo && !static_build && journald
 
-package journald // import "github.com/docker/docker/daemon/logger/journald"
+package journald
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 
 	"github.com/containerd/log"
 	"github.com/coreos/go-systemd/v22/journal"
-	"github.com/docker/docker/api/types/backend"
-	"github.com/docker/docker/daemon/logger"
-	"github.com/docker/docker/daemon/logger/journald/internal/sdjournal"
+	"github.com/moby/moby/v2/daemon/logger"
+	"github.com/moby/moby/v2/daemon/logger/journald/internal/sdjournal"
+	"github.com/moby/moby/v2/daemon/server/backend"
 )
 
 const (
@@ -81,15 +81,18 @@ func getPriority(d map[string]string) (journal.Priority, bool) {
 // journal priority field back to the stream that we would have assigned that
 // value.
 func getSource(d map[string]string) string {
-	source := ""
-	if priority, ok := getPriority(d); ok {
-		if priority == journal.PriErr {
-			source = "stderr"
-		} else if priority == journal.PriInfo {
-			source = "stdout"
+	priority, ok := getPriority(d)
+	if ok {
+		switch priority {
+		case journal.PriErr:
+			return "stderr"
+		case journal.PriInfo:
+			return "stdout"
+		default:
+			return ""
 		}
 	}
-	return source
+	return ""
 }
 
 func getAttrs(d map[string]string) []backend.LogAttr {

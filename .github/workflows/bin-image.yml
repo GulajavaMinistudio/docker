@@ -22,6 +22,7 @@ on:
       - '[0-9]+.x'
     tags:
       - 'v*'
+      - 'docker-v*'
   pull_request:
 
 env:
@@ -36,12 +37,13 @@ env:
 
 jobs:
   validate-dco:
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     uses: ./.github/workflows/.dco.yml
 
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only') }}
     outputs:
       platforms: ${{ steps.platforms.outputs.matrix }}
     steps:
@@ -58,20 +60,21 @@ jobs:
           ### versioning strategy
           ## push semver tag v23.0.0
           # moby/moby-bin:23.0.0
+          # moby/moby-bin:23.0
+          # moby/moby-bin:23
           # moby/moby-bin:latest
           ## push semver prerelease tag v23.0.0-beta.1
           # moby/moby-bin:23.0.0-beta.1
           ## push on master
           # moby/moby-bin:master
-          ## push on 23.0 branch
-          # moby/moby-bin:23.0
-          ## any push
-          # moby/moby-bin:sha-ad132f5
+          ## push on 28.x branch
+          # moby/moby-bin:28.x
           tags: |
-            type=semver,pattern={{version}}
             type=ref,event=branch
             type=ref,event=pr
-            type=sha
+            type=semver,pattern={{version}},match=docker-(.*)
+            type=semver,pattern={{major}}.{{minor}},match=docker-(.*)
+            type=semver,pattern={{major}},match=docker-(.*)
       -
         name: Rename meta bake definition file
         # see https://github.com/docker/metadata-action/issues/381#issuecomment-1918607161
@@ -94,11 +97,11 @@ jobs:
 
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120 # guardrails timeout for the whole job
+    timeout-minutes: 20 # guardrails timeout for the whole job
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'ci/validate-only')) }}
     needs:
       - validate-dco
       - prepare
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
       matrix:
@@ -170,10 +173,10 @@ jobs:
 
   merge:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120 # guardrails timeout for the whole job
+    timeout-minutes: 40 # guardrails timeout for the whole job
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name != 'pull_request' && github.repository == 'moby/moby' }}
     needs:
       - build
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name != 'pull_request' && github.repository == 'moby/moby'
     steps:
       -
         name: Download meta bake definition

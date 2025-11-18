@@ -21,13 +21,13 @@ on:
         default: "graphdriver"
 
 env:
-  GO_VERSION: "1.24.3"
+  GO_VERSION: "1.25.4"
   GOTESTLIST_VERSION: v0.3.1
   TESTSTAT_VERSION: v0.1.25
   ITG_CLI_MATRIX_SIZE: 6
   DOCKER_EXPERIMENTAL: 1
   DOCKER_GRAPHDRIVER: ${{ inputs.storage == 'snapshotter' && 'overlayfs' || 'overlay2' }}
-  TEST_INTEGRATION_USE_SNAPSHOTTER: ${{ inputs.storage == 'snapshotter' && '1' || '' }}
+  TEST_INTEGRATION_USE_GRAPHDRIVER: ${{ inputs.storage == 'graphdriver' && '1' || '' }}
   SETUP_BUILDX_VERSION: edge
   SETUP_BUILDKIT_IMAGE: moby/buildkit:latest
 
@@ -144,7 +144,9 @@ jobs:
               // { os: 'ubuntu-24.04', mode: 'rootless-systemd' }, // FIXME: https://github.com/moby/moby/issues/44084
             ];
             if ("${{ inputs.storage }}" == "snapshotter") {
-              includes.push({ os: 'ubuntu-24.04', mode: 'firewalld' });
+              includes.push({ os: 'ubuntu-24.04', mode: 'iptables+firewalld' });
+              includes.push({ os: 'ubuntu-24.04', mode: 'nftables' });
+              includes.push({ os: 'ubuntu-24.04', mode: 'nftables+firewalld' });
             }
             await core.group(`Set matrix`, async () => {
               core.info(`matrix: ${JSON.stringify(includes)}`);
@@ -189,6 +191,9 @@ jobs:
           if [[ "${{ matrix.mode }}" == *"firewalld"* ]]; then
             echo "FIREWALLD=true" >> $GITHUB_ENV
             CACHE_DEV_SCOPE="${CACHE_DEV_SCOPE}firewalld"
+          fi
+          if [[ "${{ matrix.mode }}" == *"nftables"* ]]; then
+            echo "DOCKER_FIREWALL_BACKEND=nftables" >> $GITHUB_ENV
           fi
           echo "CACHE_DEV_SCOPE=${CACHE_DEV_SCOPE}" >> $GITHUB_ENV
       -
@@ -265,7 +270,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: vendor.sum
+          cache: false
       -
         name: Download reports
         uses: actions/download-artifact@v4
@@ -297,7 +302,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: vendor.sum
+          cache: false
       -
         name: Install gotestlist
         run:
@@ -328,19 +333,43 @@ jobs:
             // 'include' with other matrix variables that aren't part of the
             // include items.
             // Moreover, since the goal is to run only relevant tests with
-            // firewalld enabled to minimize the number of CI jobs, we
+            // firewalld/nftables enabled to minimize the number of CI jobs, we
             // statically define the list of test suites that we want to run.
             if ("${{ inputs.storage }}" == "snapshotter") {
               matrix.include.push({
-                'mode': 'firewalld',
+                'mode': 'iptables+firewalld',
                 'test': 'DockerCLINetworkSuite|DockerCLIPortSuite|DockerDaemonSuite'
               });
               matrix.include.push({
-                'mode': 'firewalld',
+                'mode': 'iptables+firewalld',
                 'test': 'DockerSwarmSuite'
               });
               matrix.include.push({
-                'mode': 'firewalld',
+                'mode': 'iptables+firewalld',
+                'test': 'DockerNetworkSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables',
+                'test': 'DockerCLINetworkSuite|DockerCLIPortSuite|DockerDaemonSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables',
+                'test': 'DockerSwarmSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables',
+                'test': 'DockerNetworkSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables+firewalld',
+                'test': 'DockerCLINetworkSuite|DockerCLIPortSuite|DockerDaemonSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables+firewalld',
+                'test': 'DockerSwarmSuite'
+              });
+              matrix.include.push({
+                'mode': 'nftables+firewalld',
                 'test': 'DockerNetworkSuite'
               });
             }
@@ -379,6 +408,9 @@ jobs:
           if [[ "${{ matrix.mode }}" == *"firewalld"* ]]; then
             echo "FIREWALLD=true" >> $GITHUB_ENV
             CACHE_DEV_SCOPE="${CACHE_DEV_SCOPE}firewalld"
+          fi
+          if [[ "${{ matrix.mode }}" == *"nftables"* ]]; then
+            echo "DOCKER_FIREWALL_BACKEND=nftables" >> $GITHUB_ENV
           fi
           echo "CACHE_DEV_SCOPE=${CACHE_DEV_SCOPE}" >> $GITHUB_ENV
       -
@@ -437,7 +469,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-integration-cli-${{ inputs.storage }}-${{ env.TESTREPORTS_NAME }}
+          name: test-reports-integration-cli-${{ inputs.storage }}-${{ matrix.mode }}-${{ env.TESTREPORTS_NAME }}
           path: /tmp/reports/*
           retention-days: 1
 
@@ -454,13 +486,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: vendor.sum
+          cache: false
       -
         name: Download reports
         uses: actions/download-artifact@v4
         with:
           path: /tmp/reports
-          pattern: test-reports-integration-cli-${{ inputs.storage }}-*
+          pattern: test-reports-integration-cli-${{ inputs.storage }}-${{ matrix.mode }}-*
           merge-multiple: true
       -
         name: Install teststat

@@ -1,11 +1,12 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"io"
 	"os"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/v2/errdefs"
 )
 
 // ContainerStatPath stats the filesystem resource at the specified path in the
@@ -22,7 +23,7 @@ func (daemon *Daemon) ContainerStatPath(name string, path string) (*container.Pa
 			return nil, containerFileNotFound{path, name}
 		}
 		// TODO(thaJeztah): check if daemon.containerStatPath returns any errors that are not typed; if not, then return as-is
-		if errdefs.IsInvalidParameter(err) {
+		if cerrdefs.IsInvalidArgument(err) {
 			return nil, err
 		}
 		return nil, errdefs.System(err)
@@ -45,7 +46,7 @@ func (daemon *Daemon) ContainerArchivePath(name string, path string) (content io
 			return nil, nil, containerFileNotFound{path, name}
 		}
 		// TODO(thaJeztah): check if daemon.containerArchivePath returns any errors that are not typed; if not, then return as-is
-		if errdefs.IsInvalidParameter(err) {
+		if cerrdefs.IsInvalidArgument(err) {
 			return nil, nil, err
 		}
 		return nil, nil, errdefs.System(err)
@@ -56,22 +57,22 @@ func (daemon *Daemon) ContainerArchivePath(name string, path string) (content io
 // ContainerExtractToDir extracts the given archive to the specified location
 // in the filesystem of the container identified by the given name. The given
 // path must be of a directory in the container. If it is not, the error will
-// be an errdefs.InvalidParameter. If noOverwriteDirNonDir is true then it will
-// be an error if unpacking the given content would cause an existing directory
-// to be replaced with a non-directory and vice versa.
-func (daemon *Daemon) ContainerExtractToDir(name, path string, copyUIDGID, noOverwriteDirNonDir bool, content io.Reader) error {
+// be an errdefs.InvalidParameter. It returns an error if unpacking the given
+// content would cause an existing directory to be replaced with a non-directory
+// or vice versa, unless allowOverwriteDirWithFile is set to true.
+func (daemon *Daemon) ContainerExtractToDir(name, path string, copyUIDGID, allowOverwriteDirWithFile bool, content io.Reader) error {
 	ctr, err := daemon.GetContainer(name)
 	if err != nil {
 		return err
 	}
 
-	err = daemon.containerExtractToDir(ctr, path, copyUIDGID, noOverwriteDirNonDir, content)
+	err = daemon.containerExtractToDir(ctr, path, copyUIDGID, allowOverwriteDirWithFile, content)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return containerFileNotFound{path, name}
 		}
 		// TODO(thaJeztah): check if daemon.containerExtractToDir returns any errors that are not typed; if not, then return as-is
-		if errdefs.IsInvalidParameter(err) {
+		if cerrdefs.IsInvalidArgument(err) {
 			return err
 		}
 		return errdefs.System(err)

@@ -40,6 +40,7 @@ type containerdExecutor struct {
 	selinux          bool
 	traceSocket      string
 	rootless         bool
+	hypervIsolation  bool
 	runtime          *RuntimeInfo
 	cdiManager       *cdidevices.Manager
 }
@@ -73,6 +74,7 @@ type ExecutorOptions struct {
 	Selinux          bool
 	TraceSocket      string
 	Rootless         bool
+	HyperVIsolation  bool
 	Runtime          *RuntimeInfo
 	CDIManager       *cdidevices.Manager
 }
@@ -94,6 +96,7 @@ func New(executorOpts ExecutorOptions) executor.Executor {
 		selinux:          executorOpts.Selinux,
 		traceSocket:      executorOpts.TraceSocket,
 		rootless:         executorOpts.Rootless,
+		hypervIsolation:  executorOpts.HyperVIsolation,
 		runtime:          executorOpts.Runtime,
 		cdiManager:       executorOpts.CDIManager,
 	}
@@ -399,7 +402,7 @@ func (w *containerdExecutor) runProcess(ctx context.Context, p ctd.Process, resi
 			ctxDone = nil
 			var killCtx context.Context
 			killCtx, cancel = context.WithCancelCause(context.Background())
-			killCtx, _ = context.WithTimeoutCause(killCtx, 10*time.Second, errors.WithStack(context.DeadlineExceeded))
+			killCtx, _ = context.WithTimeoutCause(killCtx, 10*time.Second, errors.WithStack(context.DeadlineExceeded)) //nolint:govet
 			killCtxDone = killCtx.Done()
 			p.Kill(killCtx, syscall.SIGKILL)
 			io.Cancel()

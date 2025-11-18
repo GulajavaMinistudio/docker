@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/core/snapshots"
+	"github.com/containerd/containerd/v2/pkg/snapshotters"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/buildkit/cache"
 	"github.com/moby/buildkit/client"
@@ -20,6 +21,7 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/solver/errdefs"
+	"github.com/moby/buildkit/util/cachedigest"
 	"github.com/moby/buildkit/util/estargz"
 	"github.com/moby/buildkit/util/flightcontrol"
 	"github.com/moby/buildkit/util/imageutil"
@@ -44,6 +46,7 @@ type puller struct {
 	Ref            string
 	SessionManager *session.Manager
 	layerLimit     *int
+	checksum       digest.Digest
 	vtx            solver.Vertex
 	ResolverType
 	store sourceresolver.ResolveImageConfigOptStore
@@ -80,19 +83,23 @@ func mainManifestKey(desc ocispecs.Descriptor, platform ocispecs.Platform, layer
 	if err != nil {
 		return "", err
 	}
-	return digest.FromBytes(dt), nil
+	return cachedigest.FromBytes(dt, cachedigest.TypeJSON)
 }
 
-func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cacheKey string, imgDigest string, cacheOpts solver.CacheOpts, cacheDone bool, err error) {
+func (p *puller) CacheKey(ctx context.Context, jobCtx solver.JobContext, index int) (cacheKey string, imgDigest string, cacheOpts solver.CacheOpts, cacheDone bool, err error) {
+	var g session.Group
+	if jobCtx != nil {
+		g = jobCtx.Session()
+	}
 	var getResolver pull.SessionResolver
 	switch p.ResolverType {
 	case ResolverTypeRegistry:
 		resolver := resolver.DefaultPool.GetResolver(p.RegistryHosts, p.Ref, "pull", p.SessionManager, g).WithImageStore(p.ImageStore, p.Mode)
-		p.Puller.Resolver = resolver
+		p.Resolver = resolver
 		getResolver = func(g session.Group) remotes.Resolver { return resolver.WithSession(g) }
 	case ResolverTypeOCILayout:
 		resolver := getOCILayoutResolver(p.store, p.SessionManager, g)
-		p.Puller.Resolver = resolver
+		p.Resolver = resolver
 		// OCILayout has no need for session
 		getResolver = func(g session.Group) remotes.Resolver { return resolver }
 	default:
@@ -128,6 +135,10 @@ func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cach
 			return struct{}{}, err
 		}
 
+		if p.checksum != "" && p.manifest.MainManifestDesc.Digest != p.checksum {
+			return struct{}{}, errors.Errorf("image digest %s for %s does not match expected checksum %s", p.manifest.MainManifestDesc.Digest, p.Ref, p.checksum)
+		}
+
 		if ll := p.layerLimit; ll != nil {
 			if *ll > len(p.manifest.Descriptors) {
 				return struct{}{}, errors.Errorf("layer limit %d is greater than the number of layers in the image %d", *ll, len(p.manifest.Descriptors))
@@ -152,6 +163,7 @@ func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cach
 					labels = make(map[string]string)
 				}
 				maps.Copy(labels, estargz.SnapshotLabels(p.manifest.Ref, p.manifest.Descriptors, i))
+				labels[snapshotters.TargetRefLabel] = p.manifest.Ref
 
 				p.descHandlers[desc.Digest] = &cache.DescHandler{
 					Provider:       p.manifest.Provider,
@@ -198,16 +210,20 @@ func (p *puller) CacheKey(ctx context.Context, g session.Group, index int) (cach
 	return p.configKey, p.manifest.MainManifestDesc.Digest.String(), cacheOpts, cacheDone, nil
 }
 
-func (p *puller) Snapshot(ctx context.Context, g session.Group) (ir cache.ImmutableRef, err error) {
+func (p *puller) Snapshot(ctx context.Context, jobCtx solver.JobContext) (ir cache.ImmutableRef, err error) {
+	var g session.Group
+	if jobCtx != nil {
+		g = jobCtx.Session()
+	}
 	var getResolver pull.SessionResolver
 	switch p.ResolverType {
 	case ResolverTypeRegistry:
 		resolver := resolver.DefaultPool.GetResolver(p.RegistryHosts, p.Ref, "pull", p.SessionManager, g).WithImageStore(p.ImageStore, p.Mode)
-		p.Puller.Resolver = resolver
+		p.Resolver = resolver
 		getResolver = func(g session.Group) remotes.Resolver { return resolver.WithSession(g) }
 	case ResolverTypeOCILayout:
 		resolver := getOCILayoutResolver(p.store, p.SessionManager, g)
-		p.Puller.Resolver = resolver
+		p.Resolver = resolver
 		// OCILayout has no need for session
 		getResolver = func(g session.Group) remotes.Resolver { return resolver }
 	default:
@@ -290,7 +306,7 @@ func cacheKeyFromConfig(dt []byte, layerLimit *int) (digest.Digest, error) {
 		if layerLimit != nil {
 			return "", errors.Wrap(err, "failed to parse image config")
 		}
-		return digest.FromBytes(dt), nil // digest of config
+		return cachedigest.FromBytes(dt, cachedigest.TypeJSON) // digest of config
 	}
 	if layerLimit != nil {
 		l := *layerLimit

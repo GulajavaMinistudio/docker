@@ -1,5 +1,5 @@
 // Package sysinfo stores information about which features a kernel supports.
-package sysinfo // import "github.com/docker/docker/pkg/sysinfo"
+package sysinfo
 
 // Opt for New().
 type Opt func(info *SysInfo)
@@ -23,16 +23,6 @@ type SysInfo struct {
 
 	// Whether IPv4 forwarding is supported or not, if this was disabled, networking will not work
 	IPv4ForwardingDisabled bool
-
-	// Whether bridge-nf-call-iptables is supported or not
-	//
-	// Deprecated: netfilter module is now loaded on-demand and no longer during daemon startup, making this field obsolete. This field is always false and will be removed in the next release.
-	BridgeNFCallIPTablesDisabled bool
-
-	// Whether bridge-nf-call-ip6tables is supported or not
-	//
-	// Deprecated: netfilter module is now loaded on-demand and no longer during daemon startup, making this field obsolete. This field is always false and will be removed in the next release.
-	BridgeNFCallIP6TablesDisabled bool
 
 	// Whether the cgroup has the mountpoint of "devices" or not
 	CgroupDevicesEnabled bool
@@ -73,16 +63,6 @@ type cgroupMemInfo struct {
 
 	// Whether memory swappiness is supported or not
 	MemorySwappiness bool
-
-	// Whether kernel memory limit is supported or not. This option is used to
-	// detect support for kernel-memory limits on API < v1.42. Kernel memory
-	// limit (`kmem.limit_in_bytes`) is not supported on cgroups v2, and has been
-	// removed in kernel 5.4.
-	KernelMemory bool
-
-	// Whether kernel memory TCP limit is supported or not. Kernel memory TCP
-	// limit (`memory.kmem.tcp.limit_in_bytes`) is not supported on cgroups v2.
-	KernelMemoryTCP bool
 }
 
 type cgroupCPUInfo struct {

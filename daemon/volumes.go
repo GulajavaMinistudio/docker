@@ -1,8 +1,8 @@
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
-	"fmt"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,17 +10,17 @@ import (
 	"time"
 
 	"github.com/containerd/log"
-	"github.com/docker/docker/api/types/backend"
-	containertypes "github.com/docker/docker/api/types/container"
-	mounttypes "github.com/docker/docker/api/types/mount"
-	volumetypes "github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/layer"
-	"github.com/docker/docker/volume"
-	volumemounts "github.com/docker/docker/volume/mounts"
-	"github.com/docker/docker/volume/service"
-	volumeopts "github.com/docker/docker/volume/service/opts"
+	containertypes "github.com/moby/moby/api/types/container"
+	mounttypes "github.com/moby/moby/api/types/mount"
+	volumetypes "github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/internal/layer"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/daemon/volume"
+	volumemounts "github.com/moby/moby/v2/daemon/volume/mounts"
+	"github.com/moby/moby/v2/daemon/volume/service"
+	volumeopts "github.com/moby/moby/v2/daemon/volume/service/opts"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/pkg/errors"
 )
 
@@ -124,7 +124,7 @@ func (daemon *Daemon) registerMountPoints(container *container.Container, hostCo
 				CopyData:    false,
 			}
 
-			if len(cp.Source) == 0 {
+			if cp.Source == "" {
 				v, err := daemon.volumes.Get(ctx, cp.Name, volumeopts.WithGetDriver(cp.Driver), volumeopts.WithGetReference(container.ID))
 				if err != nil {
 					return err
@@ -248,7 +248,7 @@ func (daemon *Daemon) registerMountPoints(container *container.Container, hostCo
 		}
 
 		if mp.Type == mounttypes.TypeImage {
-			img, err := daemon.imageService.GetImage(ctx, mp.Source, backend.GetImageOpts{})
+			img, err := daemon.imageService.GetImage(ctx, mp.Source, imagebackend.GetImageOpts{})
 			if err != nil {
 				return err
 			}
@@ -257,7 +257,10 @@ func (daemon *Daemon) registerMountPoints(container *container.Container, hostCo
 				StorageOpt: container.HostConfig.StorageOpt,
 			}
 
-			layerName := fmt.Sprintf("%s-%s", container.ID, mp.Source)
+			// Include the destination in the layer name to make it unique for each mount point and container.
+			// This makes sure that the same image can be mounted multiple times with different destinations.
+			// Hex encode the destination to create a safe, unique identifier
+			layerName := hex.EncodeToString([]byte(container.ID + ",src=" + mp.Source + ",dst=" + mp.Destination))
 			layer, err := daemon.imageService.CreateLayerFromImage(img, layerName, rwLayerOpts)
 			if err != nil {
 				return err
@@ -308,7 +311,7 @@ func (daemon *Daemon) registerMountPoints(container *container.Container, hostCo
 // lazyInitializeVolume initializes a mountpoint's volume if needed.
 // This happens after a daemon restart.
 func (daemon *Daemon) lazyInitializeVolume(containerID string, m *volumemounts.MountPoint) error {
-	if len(m.Driver) > 0 && m.Volume == nil {
+	if m.Driver != "" && m.Volume == nil {
 		v, err := daemon.volumes.Get(context.TODO(), m.Name, volumeopts.WithGetDriver(m.Driver), volumeopts.WithGetReference(containerID))
 		if err != nil {
 			return err
@@ -358,7 +361,7 @@ func (v *volumeWrapper) CreatedAt() (time.Time, error) {
 	return time.Time{}, errors.New("not implemented")
 }
 
-func (v *volumeWrapper) Status() map[string]interface{} {
+func (v *volumeWrapper) Status() map[string]any {
 	return v.v.Status
 }
 

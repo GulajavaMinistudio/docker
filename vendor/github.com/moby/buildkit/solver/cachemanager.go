@@ -9,6 +9,7 @@ import (
 
 	"github.com/moby/buildkit/identity"
 	"github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/cachedigest"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
 )
@@ -388,7 +389,7 @@ func (c *cacheManager) ensurePersistentKey(k *CacheKey) error {
 		for _, ck := range deps {
 			l := CacheInfoLink{
 				Input:    Index(i),
-				Output:   Index(k.Output()),
+				Output:   k.Output(),
 				Digest:   k.Digest(),
 				Selector: ck.Selector,
 			}
@@ -415,7 +416,7 @@ func (c *cacheManager) getIDFromDeps(k *CacheKey) string {
 				m2 := make(map[string]struct{})
 				if err := c.backend.WalkLinks(c.getID(ck.CacheKey.CacheKey), CacheInfoLink{
 					Input:    Index(i),
-					Output:   Index(k.Output()),
+					Output:   k.Output(),
 					Digest:   k.Digest(),
 					Selector: ck.Selector,
 				}, func(id string) error {
@@ -448,8 +449,9 @@ func (c *cacheManager) getIDFromDeps(k *CacheKey) string {
 }
 
 func rootKey(dgst digest.Digest, output Index) digest.Digest {
+	out, _ := cachedigest.FromBytes(fmt.Appendf(nil, "%s@%d", dgst, output), cachedigest.TypeString)
 	if strings.HasPrefix(dgst.String(), "random:") {
-		return digest.Digest("random:" + digest.FromBytes(fmt.Appendf(nil, "%s@%d", dgst, output)).Encoded())
+		return digest.Digest("random:" + dgst.Encoded())
 	}
-	return digest.FromBytes(fmt.Appendf(nil, "%s@%d", dgst, output))
+	return out
 }

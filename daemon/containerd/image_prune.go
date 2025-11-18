@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
@@ -11,14 +12,14 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/distribution/reference"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/hashicorp/go-multierror"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/v2/daemon/internal/filters"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/pkg/errors"
+
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/errdefs"
 )
 
 var imagesAcceptedFilters = map[string]bool{
@@ -32,8 +33,8 @@ var imagesAcceptedFilters = map[string]bool{
 // one is in progress
 var errPruneRunning = errdefs.Conflict(errors.New("a prune operation is already running"))
 
-// ImagesPrune removes unused images
-func (i *ImageService) ImagesPrune(ctx context.Context, fltrs filters.Args) (*image.PruneReport, error) {
+// ImagePrune removes unused images
+func (i *ImageService) ImagePrune(ctx context.Context, fltrs filters.Args) (*image.PruneReport, error) {
 	if !i.pruneRunning.CompareAndSwap(false, true) {
 		return nil, errPruneRunning
 	}
@@ -108,7 +109,7 @@ func (i *ImageService) pruneUnused(ctx context.Context, filterFunc imageFilterFu
 	// Images considered for pruning.
 	imagesToPrune := map[string]c8dimages.Image{}
 	for _, img := range allImages {
-		digestRefCount[img.Target.Digest] += 1
+		digestRefCount[img.Target.Digest]++
 
 		if !danglingOnly || isDanglingImage(img) {
 			canBePruned := filterFunc(img)
@@ -138,7 +139,7 @@ func (i *ImageService) pruneUnused(ctx context.Context, filterFunc imageFilterFu
 		dgst := img.Target.Digest
 
 		if digestRefCount[dgst] > 1 {
-			digestRefCount[dgst] -= 1
+			digestRefCount[dgst]--
 			continue
 		}
 
@@ -218,16 +219,7 @@ func (i *ImageService) pruneAll(ctx context.Context, imagesToPrune map[string]c8
 	span.SetAttributes(tracing.Attribute("count", len(imagesToPrune)))
 	defer span.End()
 
-	possiblyDeletedConfigs := map[digest.Digest]struct{}{}
-	var errs error
-
-	// Workaround for https://github.com/moby/buildkit/issues/3797
-	defer func() {
-		if err := i.unleaseSnapshotsFromDeletedConfigs(context.WithoutCancel(ctx), possiblyDeletedConfigs); err != nil {
-			errs = multierror.Append(errs, err)
-		}
-	}()
-
+	var errs []error
 	for _, img := range imagesToPrune {
 		log.G(ctx).WithField("image", img).Debug("pruning image")
 
@@ -235,104 +227,53 @@ func (i *ImageService) pruneAll(ctx context.Context, imagesToPrune map[string]c8
 
 		err := i.walkPresentChildren(ctx, img.Target, func(_ context.Context, desc ocispec.Descriptor) error {
 			blobs = append(blobs, desc)
-			if c8dimages.IsConfigType(desc.MediaType) {
-				possiblyDeletedConfigs[desc.Digest] = struct{}{}
-			}
 			return nil
 		})
 		if err != nil {
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return &report, errs
+				return &report, errors.Join(errs...)
 			}
 			continue
 		}
 		err = i.images.Delete(ctx, img.Name, c8dimages.SynchronousDelete())
 		if err != nil && !cerrdefs.IsNotFound(err) {
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return &report, errs
+				return &report, errors.Join(errs...)
 			}
 			continue
 		}
 
+		familiarName := imageFamiliarName(img)
+		i.logImageEvent(img, familiarName, events.ActionUnTag)
 		report.ImagesDeleted = append(report.ImagesDeleted,
 			image.DeleteResponse{
-				Untagged: imageFamiliarName(img),
+				Untagged: familiarName,
 			},
 		)
 
+		var deleted bool
 		// Check which blobs have been deleted and sum their sizes
 		for _, blob := range blobs {
 			_, err := i.content.ReaderAt(ctx, blob)
 
 			if cerrdefs.IsNotFound(err) {
-				report.ImagesDeleted = append(report.ImagesDeleted,
-					image.DeleteResponse{
-						Deleted: blob.Digest.String(),
-					},
-				)
+				if c8dimages.IsManifestType(blob.MediaType) || c8dimages.IsIndexType(blob.MediaType) {
+					deleted = true
+					report.ImagesDeleted = append(report.ImagesDeleted,
+						image.DeleteResponse{
+							Deleted: blob.Digest.String(),
+						},
+					)
+				}
 				report.SpaceReclaimed += uint64(blob.Size)
 			}
 		}
-	}
-
-	return &report, errs
-}
-
-// unleaseSnapshotsFromDeletedConfigs removes gc.ref.snapshot content label from configs that are not
-// referenced by any of the existing images.
-// This is a temporary solution to the rootfs snapshot not being deleted when there's a buildkit history
-// item referencing an image config.
-func (i *ImageService) unleaseSnapshotsFromDeletedConfigs(ctx context.Context, possiblyDeletedConfigs map[digest.Digest]struct{}) error {
-	all, err := i.images.List(ctx)
-	if err != nil {
-		return errors.Wrap(err, "failed to list images during snapshot lease removal")
-	}
-
-	var errs error
-	for _, img := range all {
-		err := i.walkPresentChildren(ctx, img.Target, func(_ context.Context, desc ocispec.Descriptor) error {
-			if c8dimages.IsConfigType(desc.MediaType) {
-				delete(possiblyDeletedConfigs, desc.Digest)
-			}
-			return nil
-		})
-		if err != nil {
-			errs = multierror.Append(errs, err)
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return errs
-			}
-			continue
+		if deleted {
+			i.logImageEvent(img, familiarName, events.ActionDelete)
 		}
 	}
 
-	// At this point, all configs that are used by any image has been removed from the slice
-	for cfgDigest := range possiblyDeletedConfigs {
-		info, err := i.content.Info(ctx, cfgDigest)
-		if err != nil {
-			if cerrdefs.IsNotFound(err) {
-				log.G(ctx).WithField("config", cfgDigest).Debug("config already gone")
-			} else {
-				errs = multierror.Append(errs, err)
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return errs
-				}
-			}
-			continue
-		}
-
-		label := "containerd.io/gc.ref.snapshot." + i.StorageDriver()
-
-		delete(info.Labels, label)
-		_, err = i.content.Update(ctx, info, "labels."+label)
-		if err != nil {
-			errs = multierror.Append(errs, errors.Wrapf(err, "failed to remove gc.ref.snapshot label from %s", cfgDigest))
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return errs
-			}
-		}
-	}
-
-	return errs
+	return &report, errors.Join(errs...)
 }

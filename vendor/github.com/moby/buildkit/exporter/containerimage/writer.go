@@ -296,7 +296,7 @@ func (ic *ImageWriter) Commit(ctx context.Context, inp *exporter.Source, session
 			}
 
 			var defaultSubjects []intoto.Subject
-			for _, name := range strings.Split(opts.ImageName, ",") {
+			for name := range strings.SplitSeq(opts.ImageName, ",") {
 				if name == "" {
 					continue
 				}
@@ -617,7 +617,11 @@ func (ic *ImageWriter) commitAttestationsManifest(ctx context.Context, opts *Ima
 
 	if ociArtifact {
 		mfst.ArtifactType = attestationManifestArtifactType
-		mfst.Subject = &target
+		mfst.Subject = &ocispecs.Descriptor{
+			Digest:    target.Digest,
+			Size:      target.Size,
+			MediaType: target.MediaType,
+		}
 	}
 
 	labels := map[string]string{
@@ -683,7 +687,10 @@ func defaultImageConfig() ([]byte, error) {
 	img.Variant = pl.Variant
 	img.RootFS.Type = "layers"
 	img.Config.WorkingDir = "/"
-	img.Config.Env = []string{"PATH=" + system.DefaultPathEnv(pl.OS)}
+	// don't set default PATH on Windows. #5445
+	if pl.OS != "windows" {
+		img.Config.Env = []string{"PATH=" + system.DefaultPathEnv(pl.OS)}
+	}
 	dt, err := json.Marshal(img)
 	return dt, errors.Wrap(err, "failed to create empty image config")
 }

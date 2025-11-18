@@ -14,6 +14,7 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
+	remoteserrors "github.com/containerd/containerd/v2/core/remotes/errors"
 	"github.com/containerd/containerd/v2/pkg/epoch"
 	"github.com/containerd/containerd/v2/pkg/labels"
 	"github.com/containerd/containerd/v2/pkg/rootfs"
@@ -28,6 +29,7 @@ import (
 	"github.com/moby/buildkit/snapshot"
 	"github.com/moby/buildkit/util/compression"
 	"github.com/moby/buildkit/util/contentutil"
+	"github.com/moby/buildkit/util/errutil"
 	"github.com/moby/buildkit/util/leaseutil"
 	"github.com/moby/buildkit/util/progress"
 	"github.com/moby/buildkit/util/push"
@@ -269,8 +271,8 @@ func (e *imageExporterInstance) Export(ctx context.Context, src *exporter.Source
 	}
 
 	if e.opts.ImageName != "" {
-		targetNames := strings.Split(e.opts.ImageName, ",")
-		for _, targetName := range targetNames {
+		targetNames := strings.SplitSeq(e.opts.ImageName, ",")
+		for targetName := range targetNames {
 			if e.opt.Images != nil && e.store {
 				tagDone := progress.OneOff(ctx, "naming to "+targetName)
 
@@ -333,7 +335,6 @@ func (e *imageExporterInstance) Export(ctx context.Context, src *exporter.Source
 					}
 					eg, ctx := errgroup.WithContext(ctx)
 					for _, ref := range refs {
-						ref := ref
 						eg.Go(func() error {
 							remotes, err := ref.GetRemotes(ctx, false, e.opts.RefCfg, false, session.NewGroup(sessionID))
 							if err != nil {
@@ -356,6 +357,10 @@ func (e *imageExporterInstance) Export(ctx context.Context, src *exporter.Source
 			if e.push {
 				err = e.pushImage(ctx, src, sessionID, targetName, desc.Digest)
 				if err != nil {
+					var statusErr remoteserrors.ErrUnexpectedStatus
+					if errors.As(err, &statusErr) {
+						err = errutil.WithDetails(err)
+					}
 					return nil, nil, errors.Wrapf(err, "failed to push %v", targetName)
 				}
 			}

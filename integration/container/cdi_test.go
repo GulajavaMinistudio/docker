@@ -1,4 +1,4 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"bytes"
@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/docker/testutil"
-	"github.com/docker/docker/testutil/daemon"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
+	"github.com/moby/moby/v2/internal/testutil"
+	"github.com/moby/moby/v2/internal/testutil/daemon"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/poll"
@@ -27,12 +29,9 @@ func TestCreateWithCDIDevices(t *testing.T) {
 
 	cwd, err := os.Getwd()
 	assert.NilError(t, err)
-	configPath := filepath.Join(cwd, "daemon.json")
-	err = os.WriteFile(configPath, []byte(`{"features": {"cdi": true}}`), 0o644)
-	defer os.Remove(configPath)
-	assert.NilError(t, err)
+
 	d := daemon.New(t)
-	d.StartWithBusybox(ctx, t, "--config-file", configPath, "--cdi-spec-dir="+filepath.Join(cwd, "testdata", "cdi"))
+	d.StartWithBusybox(ctx, t, "--cdi-spec-dir="+filepath.Join(cwd, "testdata", "cdi"))
 	defer d.Stop(t)
 
 	apiClient := d.NewClientT(t)
@@ -41,9 +40,9 @@ func TestCreateWithCDIDevices(t *testing.T) {
 		container.WithCmd("/bin/sh", "-c", "env"),
 		container.WithCDIDevices("vendor1.com/device=foo"),
 	)
-	defer apiClient.ContainerRemove(ctx, id, containertypes.RemoveOptions{Force: true})
+	defer apiClient.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
 
-	inspect, err := apiClient.ContainerInspect(ctx, id)
+	res, err := apiClient.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	assert.NilError(t, err)
 
 	expectedRequests := []containertypes.DeviceRequest{
@@ -52,10 +51,10 @@ func TestCreateWithCDIDevices(t *testing.T) {
 			DeviceIDs: []string{"vendor1.com/device=foo"},
 		},
 	}
-	assert.Check(t, is.DeepEqual(inspect.HostConfig.DeviceRequests, expectedRequests))
+	assert.Check(t, is.DeepEqual(res.Container.HostConfig.DeviceRequests, expectedRequests))
 
 	poll.WaitOn(t, container.IsStopped(ctx, apiClient, id))
-	reader, err := apiClient.ContainerLogs(ctx, id, containertypes.LogsOptions{
+	reader, err := apiClient.ContainerLogs(ctx, id, client.ContainerLogsOptions{
 		ShowStdout: true,
 	})
 	assert.NilError(t, err)
@@ -81,7 +80,13 @@ func TestCDISpecDirsAreInSystemInfo(t *testing.T) {
 		expectedInfoCDISpecDirs []string
 	}{
 		{
-			description:             "CDI enabled with no spec dirs specified returns default",
+			description:             "No config returns default CDI spec dirs",
+			config:                  `{}`,
+			specDirs:                nil,
+			expectedInfoCDISpecDirs: []string{"/etc/cdi", "/var/run/cdi"},
+		},
+		{
+			description:             "CDI explicitly enabled with no spec dirs specified returns default",
 			config:                  `{"features": {"cdi": true}}`,
 			specDirs:                nil,
 			expectedInfoCDISpecDirs: []string{"/etc/cdi", "/var/run/cdi"},
@@ -104,23 +109,21 @@ func TestCDISpecDirsAreInSystemInfo(t *testing.T) {
 			expectedInfoCDISpecDirs: []string{},
 		},
 		{
-			description:             "CDI disabled with no spec dirs specified returns empty slice",
+			description:             "CDI explicitly disabled with no spec dirs specified returns empty slice",
+			config:                  `{"features": {"cdi": false}}`,
 			specDirs:                nil,
 			expectedInfoCDISpecDirs: []string{},
 		},
 		{
-			description:             "CDI disabled with specified spec dirs returns empty slice",
+			description:             "CDI explicitly disabled with specified spec dirs returns empty slice",
+			config:                  `{"features": {"cdi": false}}`,
 			specDirs:                []string{"/foo/bar", "/baz/qux"},
 			expectedInfoCDISpecDirs: []string{},
 		},
 		{
-			description:             "CDI disabled with empty string as spec dir returns empty slice",
+			description:             "CDI explicitly disabled with empty string as spec dir returns empty slice",
+			config:                  `{"features": {"cdi": false}}`,
 			specDirs:                []string{""},
-			expectedInfoCDISpecDirs: []string{},
-		},
-		{
-			description:             "CDI disabled with empty config option returns empty slice",
-			config:                  `{"cdi-spec-dirs": []}`,
 			expectedInfoCDISpecDirs: []string{},
 		},
 	}
@@ -150,4 +153,53 @@ func TestCDISpecDirsAreInSystemInfo(t *testing.T) {
 			assert.Check(t, is.DeepEqual(tc.expectedInfoCDISpecDirs, info.CDISpecDirs))
 		})
 	}
+}
+
+func TestCDIInfoDiscoveredDevices(t *testing.T) {
+	skip.If(t, testEnv.IsRemoteDaemon, "cannot run daemon when remote daemon")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows", "CDI not supported on Windows")
+
+	ctx := testutil.StartSpan(baseContext, t)
+
+	// Create a sample CDI spec file
+	specContent := `{
+		"cdiVersion": "0.5.0",
+		"kind": "test.com/device",
+		"devices": [
+			{
+				"name": "mygpu0",
+				"containerEdits": {
+					"deviceNodes": [
+						{"path": "/dev/null"}
+					]
+				}
+			}
+		]
+	}`
+
+	cdiDir := testutil.TempDir(t)
+	specFilePath := filepath.Join(cdiDir, "test-device.json")
+
+	err := os.WriteFile(specFilePath, []byte(specContent), 0o644)
+	assert.NilError(t, err, "Failed to write sample CDI spec file")
+
+	d := daemon.New(t)
+	d.Start(t, "--feature", "cdi", "--cdi-spec-dir="+cdiDir)
+	defer d.Stop(t)
+
+	c := d.NewClientT(t)
+	result, err := c.Info(ctx, client.InfoOptions{})
+	assert.NilError(t, err)
+	info := result.Info
+
+	assert.Check(t, is.Len(info.CDISpecDirs, 1))
+	assert.Check(t, is.Equal(info.CDISpecDirs[0], cdiDir))
+
+	expectedDevice := system.DeviceInfo{
+		Source: "cdi",
+		ID:     "test.com/device=mygpu0",
+	}
+
+	assert.Check(t, is.Equal(len(info.DiscoveredDevices), 1), "Expected one discovered device")
+	assert.Check(t, is.DeepEqual(info.DiscoveredDevices, []system.DeviceInfo{expectedDevice}))
 }

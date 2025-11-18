@@ -1,10 +1,8 @@
-// TODO(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.23
-
-package daemon // import "github.com/docker/docker/daemon"
+package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,19 +11,19 @@ import (
 
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
-	"github.com/docker/docker/api/types/backend"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	networktypes "github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/container"
-	"github.com/docker/docker/daemon/config"
-	"github.com/docker/docker/daemon/images"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/image"
-	"github.com/docker/docker/internal/metrics"
-	"github.com/docker/docker/internal/multierror"
-	"github.com/docker/docker/internal/otelutil"
-	"github.com/docker/docker/runconfig"
+	containertypes "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	networktypes "github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/v2/daemon/config"
+	"github.com/moby/moby/v2/daemon/container"
+	"github.com/moby/moby/v2/daemon/images"
+	"github.com/moby/moby/v2/daemon/internal/image"
+	"github.com/moby/moby/v2/daemon/internal/metrics"
+	"github.com/moby/moby/v2/daemon/internal/multierror"
+	"github.com/moby/moby/v2/daemon/internal/otelutil"
+	"github.com/moby/moby/v2/daemon/server/backend"
+	"github.com/moby/moby/v2/daemon/server/imagebackend"
+	"github.com/moby/moby/v2/errdefs"
 	"github.com/moby/sys/user"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/selinux/go-selinux"
@@ -76,7 +74,7 @@ func (daemon *Daemon) containerCreate(ctx context.Context, daemonCfg *configStor
 
 	start := time.Now()
 	if opts.params.Config == nil {
-		return containertypes.CreateResponse{}, errdefs.InvalidParameter(runconfig.ErrEmptyConfig)
+		return containertypes.CreateResponse{}, errdefs.InvalidParameter(errors.New("config cannot be empty in order to create a container"))
 	}
 
 	// Normalize some defaults. Doing this "ad-hoc" here for now, as there's
@@ -95,7 +93,7 @@ func (daemon *Daemon) containerCreate(ctx context.Context, daemonCfg *configStor
 	}
 
 	if opts.params.Platform == nil && opts.params.Config.Image != "" {
-		img, err := daemon.imageService.GetImage(ctx, opts.params.Config.Image, backend.GetImageOpts{Platform: opts.params.Platform})
+		img, err := daemon.imageService.GetImage(ctx, opts.params.Config.Image, imagebackend.GetImageOpts{})
 		if err != nil {
 			return containertypes.CreateResponse{}, err
 		}
@@ -108,7 +106,7 @@ func (daemon *Daemon) containerCreate(ctx context.Context, daemonCfg *configStor
 			}
 
 			if !images.OnlyPlatformWithFallback(p).Match(imgPlat) {
-				warnings = append(warnings, fmt.Sprintf("The requested image's platform (%s) does not match the detected host platform (%s) and no specific platform was requested", platforms.Format(imgPlat), platforms.Format(p)))
+				warnings = append(warnings, fmt.Sprintf("The requested image's platform (%s) does not match the detected host platform (%s) and no specific platform was requested", platforms.FormatAll(imgPlat), platforms.FormatAll(p)))
 			}
 		}
 	}
@@ -176,7 +174,7 @@ func (daemon *Daemon) create(ctx context.Context, daemonCfg *config.Config, opts
 	)
 
 	if opts.params.Config.Image != "" {
-		img, err = daemon.imageService.GetImage(ctx, opts.params.Config.Image, backend.GetImageOpts{Platform: opts.params.Platform})
+		img, err = daemon.imageService.GetImage(ctx, opts.params.Config.Image, imagebackend.GetImageOpts{Platform: opts.params.Platform})
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +328,7 @@ func (daemon *Daemon) generateSecurityOpt(hostConfig *containertypes.HostConfig)
 	if pidLabel != nil && ipcLabel != nil {
 		for i := 0; i < len(pidLabel); i++ {
 			if pidLabel[i] != ipcLabel[i] {
-				return nil, fmt.Errorf("--ipc and --pid containers SELinux labels aren't the same")
+				return nil, errors.New("--ipc and --pid containers SELinux labels aren't the same")
 			}
 		}
 		return toHostConfigSelinuxLabels(pidLabel), nil
@@ -349,7 +347,7 @@ func (daemon *Daemon) mergeAndVerifyConfig(config *containertypes.Config, img *i
 		config.Entrypoint = nil
 	}
 	if len(config.Entrypoint) == 0 && len(config.Cmd) == 0 {
-		return fmt.Errorf("no command specified")
+		return errors.New("no command specified")
 	}
 	return nil
 }

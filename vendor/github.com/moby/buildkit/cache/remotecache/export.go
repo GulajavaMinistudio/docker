@@ -9,6 +9,7 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	v1 "github.com/moby/buildkit/cache/remotecache/v1"
+	cacheimporttypes "github.com/moby/buildkit/cache/remotecache/v1/types"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/solver"
 	"github.com/moby/buildkit/util/bklog"
@@ -83,7 +84,7 @@ func NewExportableCache(oci bool, imageManifest bool) (*ExportableCache, error) 
 	if imageManifest {
 		mediaType = ocispecs.MediaTypeImageManifest
 		if !oci {
-			return nil, errors.Errorf("invalid configuration for remote cache")
+			return nil, errors.Errorf("invalid configuration for remote cache, OCI mediatypes are required for image-manifest cache format")
 		}
 	} else {
 		if oci {
@@ -219,7 +220,7 @@ func (ce *contentCacheExporter) Finalize(ctx context.Context) (map[string]string
 	desc := ocispecs.Descriptor{
 		Digest:    dgst,
 		Size:      int64(len(dt)),
-		MediaType: v1.CacheConfigMediaTypeV0,
+		MediaType: cacheimporttypes.CacheConfigMediaTypeV0,
 	}
 	configDone := progress.OneOff(ctx, fmt.Sprintf("writing config %s", dgst))
 	if err := content.WriteBlob(ctx, ce.ingester, dgst.String(), bytes.NewReader(dt), desc); err != nil {

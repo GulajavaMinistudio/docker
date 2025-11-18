@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +17,8 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/buildkit/session"
 	sessionauth "github.com/moby/buildkit/session/auth"
-	log "github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/errutil"
 	"github.com/moby/buildkit/util/flightcontrol"
 	"github.com/moby/buildkit/version"
 	"github.com/pkg/errors"
@@ -153,7 +154,8 @@ func (a *dockerAuthorizer) AddResponses(ctx context.Context, responses []*http.R
 	handler := a.handlers.get(ctx, host, a.sm, a.session)
 
 	for _, c := range auth.ParseAuthHeader(last.Header) {
-		if c.Scheme == auth.BearerAuth {
+		switch c.Scheme {
+		case auth.BearerAuth:
 			var oldScopes []string
 			if err := invalidAuthorization(c, responses); err != nil {
 				a.handlers.delete(handler)
@@ -200,7 +202,7 @@ func (a *dockerAuthorizer) AddResponses(ctx context.Context, responses []*http.R
 			a.handlers.set(host, sessionID, newAuthHandler(host, a.client, c.Scheme, pubKey, common))
 
 			return nil
-		} else if c.Scheme == auth.BasicAuth {
+		case auth.BasicAuth:
 			sessionID, username, secret, err := a.getCredentials(host)
 			if err != nil {
 				return err
@@ -288,7 +290,7 @@ func (ah *authHandler) doBearerAuth(ctx context.Context, sm *session.Manager, g 
 
 	to.Scopes = parseScopes(docker.GetTokenScopes(ctx, to.Scopes)).normalize()
 
-	// Docs: https://docs.docker.com/registry/spec/auth/scope
+	// Docs: https://distribution.github.io/distribution/spec/auth/scope
 	scoped := strings.Join(to.Scopes, " ")
 
 	res, err := ah.g.Do(ctx, scoped, func(ctx context.Context) (*authResult, error) {
@@ -366,7 +368,7 @@ func (ah *authHandler) fetchToken(ctx context.Context, sm *session.Manager, g se
 	// fetch token for the resource scope
 	if to.Secret != "" {
 		defer func() {
-			err = errors.Wrap(err, "failed to fetch oauth token")
+			err = errors.Wrap(errutil.WithDetails(err), "failed to fetch oauth token")
 		}()
 		// try GET first because Docker Hub does not support POST
 		// switch once support has landed
@@ -377,7 +379,7 @@ func (ah *authHandler) fetchToken(ctx context.Context, sm *session.Manager, g se
 				// retry with POST request
 				// As of September 2017, GCR is known to return 404.
 				// As of February 2018, JFrog Artifactory is known to return 401.
-				if (errStatus.StatusCode == 405 && to.Username != "") || errStatus.StatusCode == 404 || errStatus.StatusCode == 401 {
+				if (errStatus.StatusCode == http.StatusMethodNotAllowed && to.Username != "") || errStatus.StatusCode == http.StatusNotFound || errStatus.StatusCode == http.StatusUnauthorized {
 					resp, err := auth.FetchTokenWithOAuth(ctx, ah.client, hdr, "buildkit-client", to)
 					if err != nil {
 						return nil, err
@@ -389,7 +391,7 @@ func (ah *authHandler) fetchToken(ctx context.Context, sm *session.Manager, g se
 					token = resp.AccessToken
 					return nil, nil
 				}
-				log.G(ctx).WithFields(logrus.Fields{
+				bklog.G(ctx).WithFields(logrus.Fields{
 					"status": errStatus.Status,
 					"body":   string(errStatus.Body),
 				}).Debugf("token request failed")
@@ -444,14 +446,14 @@ func sameRequest(r1, r2 *http.Request) bool {
 type scopes map[string]map[string]struct{}
 
 func parseScopes(s []string) scopes {
-	// https://docs.docker.com/registry/spec/auth/scope/
+	// https://distribution.github.io/distribution/spec/auth/scope/
 	m := map[string]map[string]struct{}{}
 	for _, scopeStr := range s {
 		if scopeStr == "" {
 			return nil
 		}
 		// The scopeStr may have strings that contain multiple scopes separated by a space.
-		for _, scope := range strings.Split(scopeStr, " ") {
+		for scope := range strings.SplitSeq(scopeStr, " ") {
 			parts := strings.SplitN(scope, ":", 3)
 			names := []string{parts[0]}
 			if len(parts) > 1 {
@@ -481,7 +483,7 @@ func (s scopes) normalize() []string {
 	for n := range s {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	out := make([]string, 0, len(s))
 
@@ -490,7 +492,7 @@ func (s scopes) normalize() []string {
 		for a := range s[n] {
 			actions = append(actions, a)
 		}
-		sort.Strings(actions)
+		slices.Sort(actions)
 
 		out = append(out, n+":"+strings.Join(actions, ","))
 	}

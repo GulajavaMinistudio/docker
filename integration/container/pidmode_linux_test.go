@@ -1,12 +1,12 @@
-package container // import "github.com/docker/docker/integration/container"
+package container
 
 import (
 	"os"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/errdefs"
-	"github.com/docker/docker/integration/internal/container"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/v2/integration/internal/container"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/skip"
@@ -39,7 +39,7 @@ func TestPIDModeContainer(t *testing.T) {
 
 	t.Run("non-existing container", func(t *testing.T) {
 		_, err := container.CreateFromConfig(ctx, apiClient, container.NewTestConfig(container.WithPIDMode("container:nosuchcontainer")))
-		assert.Check(t, is.ErrorType(err, errdefs.IsInvalidParameter))
+		assert.Check(t, is.ErrorType(err, cerrdefs.IsInvalidArgument))
 		assert.Check(t, is.ErrorContains(err, "No such container: nosuchcontainer"))
 	})
 
@@ -50,8 +50,8 @@ func TestPIDModeContainer(t *testing.T) {
 		ctr, err := container.CreateFromConfig(ctx, apiClient, container.NewTestConfig(container.WithPIDMode("container:"+pidCtrName)))
 		assert.NilError(t, err, "should not produce an error when creating, only when starting")
 
-		err = apiClient.ContainerStart(ctx, ctr.ID, containertypes.StartOptions{})
-		assert.Check(t, is.ErrorType(err, errdefs.IsSystem), "should produce a System error when starting an existing container from an invalid state")
+		_, err = apiClient.ContainerStart(ctx, ctr.ID, client.ContainerStartOptions{})
+		assert.Check(t, is.ErrorType(err, cerrdefs.IsInternal), "should produce a System error when starting an existing container from an invalid state")
 		assert.Check(t, is.ErrorContains(err, "failed to join PID namespace"))
 		assert.Check(t, is.ErrorContains(err, cPIDContainerID+" is not running"))
 	})
@@ -63,7 +63,7 @@ func TestPIDModeContainer(t *testing.T) {
 		ctr, err := container.CreateFromConfig(ctx, apiClient, container.NewTestConfig(container.WithPIDMode("container:"+pidCtrName)))
 		assert.NilError(t, err)
 
-		err = apiClient.ContainerStart(ctx, ctr.ID, containertypes.StartOptions{})
+		_, err = apiClient.ContainerStart(ctx, ctr.ID, client.ContainerStartOptions{})
 		assert.Check(t, err)
 	})
 }
