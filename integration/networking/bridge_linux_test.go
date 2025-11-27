@@ -2058,3 +2058,84 @@ func TestDNSNamesForNonSwarmScopedNetworks(t *testing.T) {
 		container.WithAutoRemove)
 	assert.Equal(t, res.ExitCode, 0, "exit code: %d, expected 0; stdout:\n%s", res.ExitCode, res.Stdout)
 }
+
+// Check that when a network is created with no --subnet, a container can be
+// started with a --ip in the subnet allocated from the default pools.
+//
+// Regression test for https://github.com/moby/moby/issues/51569
+func TestSetIPWithNoConfiguredSubnet(t *testing.T) {
+	ctx := setupTest(t)
+	c := testEnv.APIClient()
+
+	const bridgeName = "subnet-from-pools"
+	network.CreateNoError(ctx, t, c, bridgeName, network.WithIPv6())
+	defer network.RemoveNoError(ctx, t, c, bridgeName)
+
+	insp := network.InspectNoError(ctx, t, c, bridgeName, client.NetworkInspectOptions{})
+	assert.Assert(t, is.Len(insp.Network.IPAM.Config, 2))
+	ip4 := insp.Network.IPAM.Config[0].Subnet.Addr().Next().Next().String()
+	ip6 := insp.Network.IPAM.Config[1].Subnet.Addr().Next().Next().String()
+	if insp.Network.IPAM.Config[0].Subnet.Addr().Is6() {
+		ip4, ip6 = ip6, ip4
+	}
+
+	res := container.RunAttach(ctx, t, c,
+		container.WithCmd("ip", "addr", "show", "eth0"),
+		container.WithNetworkMode(bridgeName),
+		container.WithIPv4(bridgeName, ip4),
+		container.WithIPv6(bridgeName, ip6),
+	)
+	if assert.Check(t, is.Equal(res.ExitCode, 0)) {
+		assert.Check(t, is.Contains(res.Stdout.String(), ip4))
+		assert.Check(t, is.Contains(res.Stdout.String(), ip6))
+	}
+}
+
+// Regression test for https://github.com/moby/moby/issues/51578
+func TestGatewayErrorOnNetDisconnect(t *testing.T) {
+	ctx := setupTest(t)
+	d := daemon.New(t)
+	d.StartWithBusybox(ctx, t)
+	defer d.Stop(t)
+	c := d.NewClientT(t)
+
+	network.CreateNoError(ctx, t, c, "n1")
+	defer network.RemoveNoError(ctx, t, c, "n1")
+	network.CreateNoError(ctx, t, c, "n2")
+	defer network.RemoveNoError(ctx, t, c, "n2")
+
+	// Run a container attached to both networks, with n1 providing the default gateway
+	// and n2's interface named "eth2".
+	ctrID := container.Run(ctx, t, c,
+		container.WithEndpointSettings("n1", &networktypes.EndpointSettings{GwPriority: 1}),
+		container.WithEndpointSettings("n2", &networktypes.EndpointSettings{DriverOpts: map[string]string{
+			netlabel.Ifname: "eth2",
+		}}),
+		container.WithCapability("NET_ADMIN"),
+	)
+	defer container.Remove(ctx, t, c, ctrID, client.ContainerRemoveOptions{Force: true})
+
+	// Break n2 so it can't be used as a gateway (there will be no route).
+	execRes := container.ExecT(ctx, t, c, ctrID, []string{"ip", "link", "set", "eth2", "down"})
+	assert.Assert(t, is.Equal(execRes.ExitCode, 0))
+
+	// Disconnect n1, n2 will be selected as the gateway and its config will fail.
+	// The error is only logged and the disconnect proceeds.
+	_, err := c.NetworkDisconnect(ctx, "n1", client.NetworkDisconnectOptions{Container: ctrID})
+	assert.Check(t, err)
+
+	// Check n1 can be reconnected.
+	_, err = c.NetworkConnect(ctx, "n1", client.NetworkConnectOptions{Container: ctrID})
+	assert.Check(t, err)
+
+	// Check the container can be restarted.
+	timeout := 0
+	_, err = c.ContainerRestart(ctx, ctrID, client.ContainerRestartOptions{Timeout: &timeout})
+	assert.Check(t, err)
+
+	// Both networks should be attached.
+	ctrInsp := container.Inspect(ctx, t, c, ctrID)
+	assert.Check(t, is.Len(ctrInsp.NetworkSettings.Networks, 2))
+	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, "n1"))
+	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, "n2"))
+}

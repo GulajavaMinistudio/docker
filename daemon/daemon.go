@@ -592,7 +592,7 @@ func (daemon *Daemon) restore(ctx context.Context, cfg *configStore, containers 
 		go func(c *container.Container) {
 			_ = sem.Acquire(context.Background(), 1)
 
-			if err := daemon.registerLinks(c, c.HostConfig); err != nil {
+			if err := daemon.registerLinks(c); err != nil {
 				log.G(ctx).WithField("container", c.ID).WithError(err).Error("failed to register link for container")
 			}
 
@@ -1235,6 +1235,9 @@ func NewDaemon(ctx context.Context, config *config.Config, pluginStore *plugin.S
 	}
 
 	if d.imageService == nil {
+		if d.containerdClient == nil {
+			return nil, errors.New("containerd snapshotter is enabled but containerd is not configured")
+		}
 		log.G(ctx).Info("Starting daemon with containerd snapshotter integration enabled")
 
 		resp, err := d.containerdClient.IntrospectionService().Plugins(ctx, `type=="io.containerd.snapshotter.v1"`)
