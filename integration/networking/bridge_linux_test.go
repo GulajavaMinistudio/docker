@@ -22,12 +22,14 @@ import (
 	"github.com/moby/moby/v2/daemon/libnetwork/drivers/bridge"
 	"github.com/moby/moby/v2/daemon/libnetwork/iptables"
 	"github.com/moby/moby/v2/daemon/libnetwork/netlabel"
+	"github.com/moby/moby/v2/integration/internal/build"
 	"github.com/moby/moby/v2/integration/internal/container"
 	"github.com/moby/moby/v2/integration/internal/network"
 	"github.com/moby/moby/v2/integration/internal/testutils/networking"
 	n "github.com/moby/moby/v2/integration/network"
 	"github.com/moby/moby/v2/internal/testutil"
 	"github.com/moby/moby/v2/internal/testutil/daemon"
+	"github.com/moby/moby/v2/internal/testutil/fakecontext"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 	"gotest.tools/v3/icmd"
@@ -387,6 +389,8 @@ func TestBridgeINCRouted(t *testing.T) {
 			container.WithNetworkMode(netName),
 			container.WithName("ctr-"+gwMode),
 			container.WithExposedPorts("80/tcp"),
+			// TODO(robmry): this test supplies an empty list of PortBindings.
+			// https://github.com/moby/moby/issues/51727 will break it.
 			container.WithPortMap(networktypes.PortMap{networktypes.MustParsePort("80/tcp"): {}}),
 		)
 		t.Cleanup(func() {
@@ -1589,7 +1593,7 @@ func checkProxies(ctx context.Context, t *testing.T, c *client.Client, daemonPid
 		t.Error(res)
 		return
 	}
-	for _, line := range strings.Split(res.Stdout(), "\n") {
+	for line := range strings.SplitSeq(res.Stdout(), "\n") {
 		_, args, ok := strings.Cut(line, "docker-proxy")
 		if !ok {
 			continue
@@ -1783,7 +1787,7 @@ func TestAdvertiseAddresses(t *testing.T) {
 			// the associated MAC address.
 			findNeighMAC := func(neighOut, ip string) string {
 				t.Helper()
-				for _, line := range strings.Split(neighOut, "\n") {
+				for line := range strings.SplitSeq(neighOut, "\n") {
 					// Lines look like ...
 					// 172.22.22.22 dev eth0 lladdr 36:bc:ce:67:f3:e4 ref 1 used 0/7/0 probes 1 DELAY
 					fields := strings.Fields(line)
@@ -2013,7 +2017,7 @@ func TestLegacyLinksEnvVars(t *testing.T) {
 
 			// Check the list of environment variables set in the linking container.
 			var found bool
-			for _, l := range strings.Split(exportRes.Stdout.String(), "\n") {
+			for l := range strings.SplitSeq(exportRes.Stdout.String(), "\n") {
 				if strings.HasPrefix(l, "export CTR1_") {
 					// Legacy links env var found, but not expected.
 					if !tc.expectEnvVars {
@@ -2138,4 +2142,19 @@ func TestGatewayErrorOnNetDisconnect(t *testing.T) {
 	assert.Check(t, is.Len(ctrInsp.NetworkSettings.Networks, 2))
 	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, "n1"))
 	assert.Check(t, is.Contains(ctrInsp.NetworkSettings.Networks, "n2"))
+}
+
+// Regression test for https://github.com/moby/moby/issues/51620
+func TestPublishAllWithNilPortBindings(t *testing.T) {
+	ctx := setupTest(t)
+	c := testEnv.APIClient()
+
+	imgWithExpose := container.WithImage(build.Do(ctx, t, c,
+		fakecontext.New(t, "", fakecontext.WithDockerfile("FROM busybox\nEXPOSE 80/tcp\n"))))
+
+	_ = container.Run(ctx, t, c,
+		container.WithAutoRemove,
+		container.WithPublishAllPorts(true),
+		imgWithExpose,
+	)
 }

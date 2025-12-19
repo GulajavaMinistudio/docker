@@ -55,12 +55,6 @@ type clientConfig struct {
 	// takes precedence. Either field disables API-version negotiation.
 	envAPIVersion string
 
-	// negotiateVersion indicates if the client should automatically negotiate
-	// the API version to use when making requests. API version negotiation is
-	// performed on the first request, after which negotiated is set to "true"
-	// so that subsequent requests do not re-negotiate.
-	negotiateVersion bool
-
 	// traceOpts is a list of options to configure the tracing span.
 	traceOpts []otelhttp.Option
 }
@@ -138,8 +132,6 @@ type testRoundTripper func(*http.Request) (*http.Response, error)
 func (tf testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return tf(req)
 }
-
-func (testRoundTripper) skipConfigureTransport() bool { return true }
 
 // WithHostFromEnv overrides the client host with the host specified in the
 // DOCKER_HOST ([EnvOverrideHost]) environment variable. If DOCKER_HOST is not set,
@@ -325,9 +317,11 @@ func WithVersionFromEnv() Opt {
 // With this option enabled, the client automatically negotiates the API version
 // to use when making requests. API version negotiation is performed on the first
 // request; subsequent requests do not re-negotiate.
+//
+// Deprecated: API-version negotiation is now enabled by default. Use [WithAPIVersion]
+// or [WithAPIVersionFromEnv] to disable API version negotiation.
 func WithAPIVersionNegotiation() Opt {
 	return func(c *clientConfig) error {
-		c.negotiateVersion = true
 		return nil
 	}
 }

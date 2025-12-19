@@ -257,8 +257,7 @@ func TestNegotiateAPIVersionEmpty(t *testing.T) {
 	const expected = MinAPIVersion
 
 	client, err := New(FromEnv,
-		WithAPIVersionNegotiation(),
-		WithMockClient(mockResponse(http.StatusOK, http.Header{"Api-Version": []string{expected}}, "OK")),
+		WithBaseMockClient(mockPingResponse(http.StatusOK, PingResult{APIVersion: expected})),
 	)
 	assert.NilError(t, err)
 
@@ -301,12 +300,10 @@ func TestNegotiateAPIVersion(t *testing.T) {
 			expectedVersion: "1.51",
 		},
 		{
-			// client should downgrade to the last version before version
-			// negotiation was added (1.24) if the daemon does not report
-			// a version.
+			// client should not downgrade if the daemon didn't report a version.
 			doc:             "downgrade legacy",
 			pingVersion:     "",
-			expectedVersion: MinAPIVersion,
+			expectedVersion: MaxAPIVersion,
 		},
 		{
 			// client should not downgrade to the version reported by the daemon
@@ -330,8 +327,7 @@ func TestNegotiateAPIVersion(t *testing.T) {
 		t.Run(tc.doc, func(t *testing.T) {
 			opts := []Opt{
 				FromEnv,
-				WithAPIVersionNegotiation(),
-				WithMockClient(mockResponse(http.StatusOK, http.Header{"Api-Version": []string{tc.pingVersion}}, "OK")),
+				WithBaseMockClient(mockPingResponse(http.StatusOK, PingResult{APIVersion: tc.pingVersion})),
 			}
 
 			if tc.clientVersion != "" {
@@ -363,7 +359,7 @@ func TestNegotiateAPIVersionOverride(t *testing.T) {
 
 	client, err := New(
 		FromEnv,
-		WithMockClient(mockResponse(http.StatusOK, http.Header{"Api-Version": []string{"1.45"}}, "OK")),
+		WithBaseMockClient(mockPingResponse(http.StatusOK, PingResult{APIVersion: "1.45"})),
 	)
 	assert.NilError(t, err)
 
@@ -371,6 +367,7 @@ func TestNegotiateAPIVersionOverride(t *testing.T) {
 	_, err = client.Ping(t.Context(), PingOptions{
 		NegotiateAPIVersion: true,
 	})
+	assert.NilError(t, err)
 	assert.Check(t, is.Equal(client.ClientVersion(), expected))
 }
 
@@ -385,6 +382,8 @@ func TestNegotiateAPIVersionConnectionFailure(t *testing.T) {
 	_, err = client.Ping(t.Context(), PingOptions{
 		NegotiateAPIVersion: true,
 	})
+	assert.Check(t, is.ErrorType(err, IsErrConnectionFailed))
+	assert.Check(t, is.ErrorContains(err, `failed to connect to the docker API at tcp://no-such-host.invalid`))
 	assert.Check(t, is.Equal(client.ClientVersion(), expected))
 }
 
@@ -393,11 +392,9 @@ func TestNegotiateAPIVersionAutomatic(t *testing.T) {
 
 	ctx := t.Context()
 	client, err := New(
-		WithMockClient(func(req *http.Request) (*http.Response, error) {
-			hdr := http.Header{"Api-Version": []string{pingVersion}}
-			return mockResponse(http.StatusOK, hdr, "OK")(req)
+		WithBaseMockClient(func(req *http.Request) (*http.Response, error) {
+			return mockPingResponse(http.StatusOK, PingResult{APIVersion: pingVersion})(req)
 		}),
-		WithAPIVersionNegotiation(),
 	)
 	assert.NilError(t, err)
 
@@ -423,7 +420,7 @@ func TestNegotiateAPIVersionAutomatic(t *testing.T) {
 func TestNegotiateAPIVersionWithEmptyVersion(t *testing.T) {
 	client, err := New(
 		WithAPIVersion(""),
-		WithMockClient(mockResponse(http.StatusOK, http.Header{"Api-Version": []string{"1.50"}}, "OK")),
+		WithBaseMockClient(mockPingResponse(http.StatusOK, PingResult{APIVersion: "1.50"})),
 	)
 	assert.NilError(t, err)
 
@@ -431,6 +428,7 @@ func TestNegotiateAPIVersionWithEmptyVersion(t *testing.T) {
 	_, err = client.Ping(t.Context(), PingOptions{
 		NegotiateAPIVersion: true,
 	})
+	assert.NilError(t, err)
 	assert.Check(t, is.Equal(client.ClientVersion(), expected))
 }
 
@@ -443,7 +441,7 @@ func TestNegotiateAPIVersionWithFixedVersion(t *testing.T) {
 	)
 	client, err := New(
 		WithAPIVersion(customVersion),
-		WithMockClient(mockResponse(http.StatusOK, http.Header{"Api-Version": []string{pingVersion}}, "OK")),
+		WithBaseMockClient(mockPingResponse(http.StatusOK, PingResult{APIVersion: pingVersion})),
 	)
 	assert.NilError(t, err)
 
